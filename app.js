@@ -261,24 +261,30 @@ function setupAuth() {
    百選データ・検索
    ========================================================= */
 let mapSearch, layerSearch, mapPlan, layerPlan;
+const PIN = { radius: 7, weight: 2, color: '#FFFFFF', fillColor: '#2B4F7A', fillOpacity: 0.9 };
 function initMaps() {
   const tiles = () => L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 18, attribution: '© OpenStreetMap contributors' });
-  mapSearch = L.map('mapSearch').setView(C.MAP.center, C.MAP.zoom); tiles().addTo(mapSearch);
+  // preferCanvas：ピンをCanvasでまとめて描くので数百件でも軽い
+  mapSearch = L.map('mapSearch', { preferCanvas: true }).setView(C.MAP.center, C.MAP.zoom); tiles().addTo(mapSearch);
   layerSearch = L.layerGroup().addTo(mapSearch);
-  mapPlan = L.map('mapPlan').setView(C.MAP.center, C.MAP.zoom); tiles().addTo(mapPlan);
+  mapPlan = L.map('mapPlan', { preferCanvas: true }).setView(C.MAP.center, C.MAP.zoom); tiles().addTo(mapPlan);
   layerPlan = L.layerGroup().addTo(mapPlan);
 }
 
 async function loadMaster() {
-  const cached = LS.get('master', null);
-  if (cached) applyMaster(cached);
+  const cached = LS.get('master2', null);
+  if (cached) applyMaster(cached);           // 手元のデータで即表示
+  else $('#resultCount').textContent = '読み込み中…';
   try {
-    const r = await api('getMaster');
-    LS.set('master', { categories: r.categories, spots: r.spots });
-    applyMaster(r);
+    const r = await api('getMaster', { version: cached ? cached.version : '' });
+    if (r.unchanged) return;                 // 変更なし：通信はほぼ空
+    const m = { version: r.version, categories: r.categories, spots: r.spots };
+    LS.set('master2', m); LS.del('master');
+    applyMaster(m);
   } catch (e) { if (!cached) toast('データを読み込めませんでした：' + e.message, 5000); }
 }
 function applyMaster(m) {
+  state.masterVersion = m.version || '';
   state.categories = m.categories || [];
   state.spots = (m.spots || []).map(s => ({ ...s, lat: +s.lat, lng: +s.lng }));
   renderChips(); renderSpots();
@@ -301,8 +307,12 @@ function filteredSpots() {
     (!k || (s.name + s.description + s.pref).toLowerCase().includes(k)));
 }
 
+let lastRenderKey = '';
 function renderSpots() {
   const list = filteredSpots();
+  const key = JSON.stringify(state.filter) + '|' + state.spots.length + '|' + (state.masterVersion || '');
+  if (key === lastRenderKey) return;
+  lastRenderKey = key;
   $('#resultCount').textContent = list.length > 200 ? `${list.length} 件（一覧は先頭200件。分野や都道府県で絞り込むと全部見られます）` : `${list.length} 件`;
   $('#spotList').innerHTML = list.length ? list.slice(0, 200).map(s => {
     const c = catOf(s.category);
@@ -321,7 +331,7 @@ function renderSpots() {
   layerSearch.clearLayers();
   const pts = [];
   list.filter(hasPos).forEach(s => {
-    L.marker([s.lat, s.lng]).bindPopup(`<b>${esc(s.name)}</b><br>${esc(catOf(s.category).name)}`).addTo(layerSearch);
+    L.circleMarker([s.lat, s.lng], PIN).bindPopup(`<b>${esc(s.name)}</b><br>${esc(catOf(s.category).name)}`).addTo(layerSearch);
     pts.push([s.lat, s.lng]);
   });
   if (pts.length) mapSearch.fitBounds(pts, { padding: [30, 30], maxZoom: 12 });
@@ -501,6 +511,8 @@ function openGuide(spotId) {
   $('#guideContent').innerHTML = `<div class="gsec"><p>${esc(s.description)}</p></div>`;
   $('#hereInfo').textContent = '';
   $('#btnPlay').disabled = true; $('#playStatus').textContent = '';
+  const local = LS.get('guide_' + s.spotId, null);
+  if (local) { state.guideData = local; renderGuide(local); $('#btnPlay').disabled = false; }
   showView('guide');
 }
 
@@ -528,9 +540,15 @@ function splitNarration(text, max) {
   if (buf.trim()) out.push(buf);
   return out;
 }
+const ttsMemo = new Map();
 async function ttsChunk(text) {
-  const r = await api('tts', { text, voice: C.TTS.voice }, { auth: true });
-  return 'data:audio/wav;base64,' + r.audio;
+  if (ttsMemo.has(text)) return ttsMemo.get(text);
+  const p = api('tts', { text, voice: C.TTS.voice }, { auth: true })
+    .then(r => 'data:audio/wav;base64,' + r.audio)
+    .catch(e => { ttsMemo.delete(text); throw e; });
+  ttsMemo.set(text, p);
+  if (ttsMemo.size > 40) ttsMemo.delete(ttsMemo.keys().next().value);
+  return p;
 }
 async function playNarration() {
   if (!state.guideData) return;
@@ -572,9 +590,16 @@ function stopAudio() {
 function setupGuide() {
   $('#btnMakeGuide').onclick = async e => {
     const s = state.guideSpot; if (!s) return;
+    const local = LS.get('guide_' + s.spotId, null);
+    if (local) {
+      state.guideData = local; renderGuide(local);
+      $('#btnPlay').disabled = false; $('#playStatus').textContent = '保存済みの解説を表示しています';
+      return;
+    }
     busy(e.target, true, '解説を作成中…');
     try {
       const r = await api('generateGuide', { spotId: s.spotId }, { auth: true });
+      LS.set('guide_' + s.spotId, r.guide);
       state.guideData = r.guide; renderGuide(r.guide);
       $('#btnPlay').disabled = false;
       $('#playStatus').textContent = r.cached ? '保存済みの解説を表示しています' : '';

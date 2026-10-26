@@ -130,6 +130,7 @@ function setup() {
       sourceUrl: 'https://j100s.com/100.html', sample: true, updatedAt: now
     }));
   }
+  clearMasterCache();
   Logger.log('セットアップ完了');
 }
 
@@ -159,20 +160,25 @@ function findUser_(email) {
 
 function createSession_(u) {
   const token = Utilities.getUuid() + Utilities.getUuid().slice(0, 8);
-  CacheService.getScriptCache().put('sess_' + token, JSON.stringify({ userId: u.userId }), SESSION_SEC);
+  const sess = Object.assign(publicUser_(u), { isFirstLogin: isTrue_(u.isFirstLogin) });
+  CacheService.getScriptCache().put('sess_' + token, JSON.stringify(sess), SESSION_SEC);
   return token;
 }
-/** allowFirst=true：初回パスワード変更前でも通す */
+/** allowFirst=true：初回パスワード変更前でも通す（シートは読まずキャッシュだけで判定＝高速） */
 function auth_(token, allowFirst) {
   if (!token) throw appErr_('ログインが必要です', 'AUTH');
-  const raw = CacheService.getScriptCache().get('sess_' + token);
+  const cache = CacheService.getScriptCache();
+  const raw = cache.get('sess_' + token);
   if (!raw) throw appErr_('ログインの有効期限が切れました。もう一度ログインしてください', 'AUTH');
-  const { userId } = JSON.parse(raw);
-  const u = rows_('Users').find(x => x.userId === userId);
-  if (!u) throw appErr_('アカウントが見つかりません', 'AUTH');
-  if (!allowFirst && isTrue_(u.isFirstLogin)) throw appErr_('先にパスワードを変更してください', 'MUST_CHANGE');
-  CacheService.getScriptCache().put('sess_' + token, raw, SESSION_SEC); // 延長
-  return u;
+  const sess = JSON.parse(raw);
+  if (!sess.email) { // 旧形式のセッションは一度だけシートから補完
+    const u = rows_('Users').find(x => x.userId === sess.userId);
+    if (!u) throw appErr_('アカウントが見つかりません', 'AUTH');
+    Object.assign(sess, publicUser_(u), { isFirstLogin: isTrue_(u.isFirstLogin) });
+  }
+  if (!allowFirst && sess.isFirstLogin) throw appErr_('先にパスワードを変更してください', 'MUST_CHANGE');
+  cache.put('sess_' + token, JSON.stringify(sess), SESSION_SEC); // 延長
+  return sess;
 }
 const publicUser_ = u => ({ userId: u.userId, email: u.email, nickname: u.nickname, role: u.role || 'member' });
 
@@ -232,12 +238,16 @@ function forgotPassword(d) {
 }
 
 function changePassword(d, token) {
-  const u = auth_(token, true);
+  const sess = auth_(token, true);
+  const u = rows_('Users').find(x => x.userId === sess.userId);
+  if (!u) throw appErr_('アカウントが見つかりません', 'AUTH');
   if (hash_(String(d.currentPassword || ''), u.salt) !== u.hash) throw appErr_('現在のパスワードが違います');
   if (!strongPw_(d.newPassword)) throw appErr_('8文字以上で、英字と数字を両方含めてください');
   if (d.newPassword === d.currentPassword) throw appErr_('今と違うパスワードにしてください');
   const salt = newSalt_();
   update_('Users', u._row, { salt, hash: hash_(d.newPassword, salt), isFirstLogin: false });
+  sess.isFirstLogin = false;
+  CacheService.getScriptCache().put('sess_' + token, JSON.stringify(sess), SESSION_SEC);
   return { message: 'パスワードを変更しました' };
 }
 
@@ -246,31 +256,75 @@ function logout(d, token) {
   return {};
 }
 function me(d, token) {
-  const u = auth_(token, true);
-  return { user: publicUser_(u), isFirstLogin: isTrue_(u.isFirstLogin) };
+  const sess = auth_(token, true);
+  return { user: publicUser_(sess), isFirstLogin: !!sess.isFirstLogin };
 }
 
 /* ===================== 百選マスター（公開） ===================== */
-function getMaster() {
+/** 大きな文字列を圧縮・分割して CacheService に保存（1件100KB制限の回避） */
+function cachePutBig_(key, str, sec) {
+  const b64 = Utilities.base64Encode(Utilities.gzip(Utilities.newBlob(str, 'application/json')).getBytes());
+  const size = 90000, parts = {};
+  const n = Math.ceil(b64.length / size);
+  for (let i = 0; i < n; i++) parts[key + '_' + i] = b64.slice(i * size, (i + 1) * size);
+  parts[key + '_n'] = String(n);
+  CacheService.getScriptCache().putAll(parts, sec);
+}
+function cacheGetBig_(key) {
   const cache = CacheService.getScriptCache();
-  const hit = cache.get('master_v1');
-  if (hit) return JSON.parse(hit);
+  const n = +cache.get(key + '_n');
+  if (!n) return null;
+  const keys = []; for (let i = 0; i < n; i++) keys.push(key + '_' + i);
+  const got = cache.getAll(keys);
+  let b64 = '';
+  for (const k of keys) { if (!got[k]) return null; b64 += got[k]; }
+  const blob = Utilities.newBlob(Utilities.base64Decode(b64), 'application/x-gzip');
+  return Utilities.ungzip(blob).getDataAsString('UTF-8');
+}
+function masterVersion_() {
+  const p = PropertiesService.getScriptProperties();
+  let v = p.getProperty('MASTER_VERSION');
+  if (!v) { v = String(Date.now()); p.setProperty('MASTER_VERSION', v); }
+  return v;
+}
+/** 画面に送るデータ（不要な列・空の値を省いて軽量化） */
+function buildMaster_() {
   const categories = rows_('Categories')
     .sort((a, b) => (+a.sort || 0) - (+b.sort || 0))
-    .map(c => ({ categoryId: c.categoryId, name: c.name, group: c.group, icon: c.icon, sourceUrl: c.sourceUrl }));
-  const spots = rows_('Spots').filter(s => s.spotId && s.name).map(s => ({
-    spotId: String(s.spotId), category: s.category, name: s.name, pref: s.pref,
-    lat: s.lat, lng: s.lng, distanceKm: s.distanceKm, durationMin: s.durationMin, difficulty: s.difficulty,
-    description: s.description, videoFileId: s.videoFileId, sourceUrl: s.sourceUrl, sample: isTrue_(s.sample),
-    elevation: s.elevation || '', area: s.area || ''
-  }));
-  const res = { categories, spots };
-  const str = JSON.stringify(res);
-  if (str.length < 95000) cache.put('master_v1', str, 600); // 10分キャッシュ
-  return res;
+    .map(c => ({ categoryId: String(c.categoryId), name: c.name, group: c.group, icon: c.icon }));
+  const spots = rows_('Spots').filter(s => s.spotId && s.name).map(s => {
+    const o = { spotId: String(s.spotId), category: s.category, name: s.name, pref: s.pref, description: s.description };
+    if (+s.lat && +s.lng) { o.lat = Math.round(s.lat * 1e5) / 1e5; o.lng = Math.round(s.lng * 1e5) / 1e5; }
+    ['distanceKm', 'durationMin', 'difficulty', 'elevation', 'videoFileId'].forEach(k => { if (s[k] !== '' && s[k] != null) o[k] = s[k]; });
+    if (isTrue_(s.sample)) o.sample = true;
+    return o;
+  });
+  return { categories, spots };
 }
-/** スプレッドシートを編集したらこれを実行すると即反映 */
-function clearMasterCache() { CacheService.getScriptCache().remove('master_v1'); }
+function masterData_() {
+  const ver = masterVersion_();
+  const hit = cacheGetBig_('master_' + ver);
+  if (hit) return { ver, str: hit };
+  const str = JSON.stringify(buildMaster_());
+  try { cachePutBig_('master_' + ver, str, 21600); } catch (e) { console.warn(e); }
+  return { ver, str };
+}
+/** d.version が最新と同じなら中身を返さない（画面側は手元の保存データを使う） */
+function getMaster(d) {
+  const ver = masterVersion_();
+  if (d && d.version === ver) return { unchanged: true, version: ver };
+  const m = masterData_();
+  return Object.assign(JSON.parse(m.str), { version: m.ver });
+}
+/** スプレッドシートを編集したらこれを実行すると即反映（版番号が変わり、画面側も取り直します） */
+function clearMasterCache() {
+  PropertiesService.getScriptProperties().setProperty('MASTER_VERSION', String(Date.now()));
+}
+/** 編集したら自動で反映させたい場合：トリガー「スプレッドシートから・編集時」に onEditClearCache を登録 */
+function onEditClearCache(e) {
+  const name = e && e.range && e.range.getSheet().getName();
+  if (name === 'Spots' || name === 'Categories') clearMasterCache();
+}
 
 /* ===================== 計画 CRUD ===================== */
 function listPlans(d, token) {
@@ -374,14 +428,26 @@ const GUIDE_SYSTEM = [
 
 function generateGuide(d, token) {
   auth_(token);
-  const spot = rows_('Spots').find(s => String(s.spotId) === String(d.spotId));
+  const master = JSON.parse(masterData_().str);
+  const spot = master.spots.find(s => String(s.spotId) === String(d.spotId));
   if (!spot) throw appErr_('スポットが見つかりません');
+  const cache = CacheService.getScriptCache();
+  const ckey = 'guide_' + spot.spotId;
 
-  const cached = rows_('Guides').find(g => String(g.spotId) === String(spot.spotId));
-  if (cached && !d.refresh) {
-    try { return { guide: JSON.parse(cached.guideJson), cached: true }; } catch (e) {}
+  if (!d.refresh) {
+    const hitC = cache.get(ckey);
+    if (hitC) return { guide: JSON.parse(hitC), cached: true };
+    const cell = sheet_('Guides').getRange('A:A').createTextFinder(String(spot.spotId)).matchEntireCell(true).findNext();
+    if (cell) {
+      try {
+        const json = sheet_('Guides').getRange(cell.getRow(), 2).getValue();
+        const g = JSON.parse(json);
+        if (json.length < 90000) cache.put(ckey, json, 21600);
+        return { guide: g, cached: true };
+      } catch (e) {}
+    }
   }
-  const cat = rows_('Categories').find(c => c.categoryId === spot.category) || {};
+  const cat = master.categories.find(c => c.categoryId === spot.category) || {};
   const model = prop_('GEMINI_MODEL', 'gemini-2.5-flash');
   const userText =
     `スポット名：${spot.name}\n分類：${cat.name || spot.category}\n所在地：${spot.pref}\n` +
@@ -417,6 +483,7 @@ function generateGuide(d, token) {
     const rec = { spotId: spot.spotId, guideJson: JSON.stringify(g), model, createdAt: new Date() };
     if (row) update_('Guides', row._row, rec); else append_('Guides', rec);
   });
+  cache.put(ckey, JSON.stringify(g), 21600);
   return { guide: g, cached: false };
 }
 
