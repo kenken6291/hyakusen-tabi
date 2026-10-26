@@ -581,37 +581,110 @@ function geocode(d) {
 }
 
 /* ===================== Googleマップの座標・URLから位置を読む ===================== */
+const okPos_ = (lat, lng) => Math.abs(lat) <= 90 && Math.abs(lng) <= 180 && !(lat === 0 && lng === 0);
+const r5_ = v => Math.round(v * 1e5) / 1e5;
+function safeDecode_(t) { try { return decodeURIComponent(t); } catch (e) { return t; } }
+
+/** URLや本文から座標を探す（正確な順に試す） */
 function parseLatLng_(t) {
   t = String(t || '');
-  try { t = decodeURIComponent(t); } catch (e) {}
-  const m = t.match(/!3d(-?\d+(?:\.\d+)?)!4d(-?\d+(?:\.\d+)?)/) ||
-    t.match(/[?&](?:q|query|ll|destination|center|daddr)=(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/i) ||
-    t.match(/@(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/);
-  if (!m) return null;
-  const lat = +m[1], lng = +m[2];
-  if (!(Math.abs(lat) <= 90 && Math.abs(lng) <= 180) || (lat === 0 && lng === 0)) return null;
-  return { lat: Math.round(lat * 1e5) / 1e5, lng: Math.round(lng * 1e5) / 1e5 };
+  const d = safeDecode_(t.replace(/\+/g, ' '));
+  const tries = [
+    [/!3d(-?\d+(?:\.\d+)?)!4d(-?\d+(?:\.\d+)?)/, 'latlng'],                                     // 場所そのもの
+    [/[?&](?:q|query|ll|destination|daddr|sll)=(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/i, 'latlng'],
+    [/markers=(-?\d+(?:\.\d+)?)(?:%2C|,)(-?\d+(?:\.\d+)?)/i, 'latlng'],
+    [/center=(-?\d+(?:\.\d+)?)(?:%2C|,)(-?\d+(?:\.\d+)?)/i, 'latlng'],
+    [/@(-?\d+\.\d+),(-?\d+\.\d+),\d/, 'latlng'],                                                 // 地図の中心
+    [/APP_INITIALIZATION_STATE=\[\[\[[-\d.e]+,(-?\d+\.\d+),(-?\d+\.\d+)\]/, 'lnglat']
+  ];
+  for (const src of [t, d]) {
+    for (const [re, order] of tries) {
+      const m = src.match(re);
+      if (!m) continue;
+      const lat = order === 'latlng' ? +m[1] : +m[2], lng = order === 'latlng' ? +m[2] : +m[1];
+      if (okPos_(lat, lng)) return { lat: r5_(lat), lng: r5_(lng) };
+    }
+  }
+  return null;
 }
-/** 短縮URL（maps.app.goo.gl など）をたどって座標を取り出す */
+/** URLから場所の名前を取り出す（/maps/place/名前/ や ?q=名前） */
+function placeNameFromUrl_(url) {
+  const u = String(url || '');
+  let m = u.match(/\/maps\/place\/([^\/?#@]+)/);
+  if (!m) m = u.match(/[?&]q=([^&#]+)/);
+  if (!m) return '';
+  const name = safeDecode_(m[1].replace(/\+/g, ' ')).trim();
+  return /^-?\d+(\.\d+)?,\s*-?\d+(\.\d+)?$/.test(name) ? '' : name.slice(0, 80);
+}
+
+/**
+ * 共有URL（https://maps.app.goo.gl/xxxx など）から位置を取り出す。
+ * 1) 転送先を順にたどってURL内の座標を探す
+ * 2) ページ本文の座標を探す
+ * 3) それでも無ければ、URL内の場所の名前で位置検索する
+ * 共有メッセージ全体（「高尾山 https://maps.app.goo.gl/…」）を貼り付けてもURL部分だけを使う。
+ */
 function resolveMapUrl(d) {
-  let url = String(d.url || '').trim();
-  if (!/^https:\/\/((maps\.app\.goo\.gl|goo\.gl|g\.co)\/|(www\.|maps\.)?google\.[a-z.]+\/)/i.test(url)) throw appErr_('GoogleマップのURLを貼り付けてください');
+  const found = String(d.url || '').match(/https?:\/\/[^\s"'<>　]+/);
+  let url = found ? found[0].replace(/[)）。、]+$/, '') : '';
+  if (!/^https?:\/\/((maps\.app\.goo\.gl|goo\.gl|g\.co)\/|(www\.|maps\.)?google\.[a-z.]+\/)/i.test(url)) {
+    throw appErr_('GoogleマップのURL（https://maps.app.goo.gl/… など）を貼り付けてください');
+  }
+  url = url.replace(/^http:/i, 'https:');
   const cache = CacheService.getScriptCache();
-  const key = 'mu_' + md5_(url);
+  const key = 'mu2_' + md5_(url);
   const hit = cache.get(key);
   if (hit) return JSON.parse(hit);
-  let pos = parseLatLng_(url);
-  for (let i = 0; i < 6 && !pos; i++) {
-    const res = UrlFetchApp.fetch(url, { followRedirects: false, muteHttpExceptions: true, headers: { 'User-Agent': 'Mozilla/5.0' } });
+
+  const opts = {
+    followRedirects: false, muteHttpExceptions: true,
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
+      'Accept-Language': 'ja,en;q=0.8',
+      'Cookie': 'CONSENT=YES+cb; SOCS=CAI'   // 同意画面への転送を避ける
+    }
+  };
+  let pos = parseLatLng_(url), name = placeNameFromUrl_(url), cur = url;
+  for (let i = 0; i < 8 && !pos; i++) {
+    let res;
+    try { res = UrlFetchApp.fetch(cur, opts); } catch (e) { console.warn(e); break; }
     const h = res.getAllHeaders();
-    const loc = h.Location || h.location;
-    if (loc) { url = loc; pos = parseLatLng_(url); continue; }
-    pos = parseLatLng_(res.getContentText().slice(0, 500000));
+    let loc = h.Location || h.location;
+    if (Array.isArray(loc)) loc = loc[0];
+    if (loc && res.getResponseCode() >= 300 && res.getResponseCode() < 400) {
+      if (/^\//.test(loc)) loc = cur.match(/^https?:\/\/[^\/]+/)[0] + loc;
+      // 同意画面の場合は continue= の先へ
+      const cont = loc.match(/[?&]continue=([^&]+)/);
+      if (/consent\.google/.test(loc) && cont) loc = safeDecode_(cont[1]);
+      cur = loc;
+      pos = parseLatLng_(cur);
+      name = placeNameFromUrl_(cur) || name;
+      continue;
+    }
+    const html = res.getContentText().slice(0, 800000);
+    pos = parseLatLng_(html);
+    if (!name) {
+      const t = html.match(/<meta[^>]+property=["']og:title["'][^>]*content=["']([^"']+)/i);
+      if (t) name = t[1].replace(/\s*[-·・]\s*Google\s*(マップ|Maps).*$/i, '').trim().slice(0, 80);
+    }
     break;
   }
-  if (!pos) throw appErr_('このURLから位置を読み取れませんでした。Googleマップで場所を右クリック（長押し）して出る数字を貼り付けてください');
-  cache.put(key, JSON.stringify(pos), 21600);
-  return pos;
+  let approx = false;
+  if (!pos && name) {
+    try {
+      const g = Maps.newGeocoder().setLanguage('ja').setRegion('jp').geocode(name);
+      const r = (g.results || [])[0];
+      if (r) { pos = { lat: r5_(r.geometry.location.lat), lng: r5_(r.geometry.location.lng) }; approx = true; }
+    } catch (e) { console.warn(e); }
+  }
+  if (!pos) throw appErr_('このURLから位置を読み取れませんでした。Googleマップで場所を右クリック（スマホは長押し）して出る数字を貼り付けてください');
+  const out = { lat: pos.lat, lng: pos.lng, name, approx };
+  cache.put(key, JSON.stringify(out), 21600);
+  return out;
+}
+/** エディタで動作確認：URLを入れて実行 → ログに結果 */
+function testResolveMapUrl() {
+  Logger.log(JSON.stringify(resolveMapUrl({ url: 'https://maps.app.goo.gl/nxhNFqjBGnK1MMX76' })));
 }
 /** 百選スポットの位置を登録・修正（管理者のみ） */
 function setSpotLocation(d, token) {

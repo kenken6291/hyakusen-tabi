@@ -458,17 +458,23 @@ function parseLatLng(text) {
   return { lat: Math.round(lat * 1e5) / 1e5, lng: Math.round(lng * 1e5) / 1e5 };
 }
 /** 座標・URL・短縮URL（maps.app.goo.gl）を位置に変換。読めなければ null */
+// 共有メッセージ（「高尾山 https://maps.app.goo.gl/…」）からURL部分を取り出す
+const MAP_URL_RE = /https?:\/\/(?:maps\.app\.goo\.gl|goo\.gl\/maps|g\.co\/kgs|(?:www\.|maps\.)?google\.[a-z.]+\/maps|maps\.google\.[a-z.]+)[^\s"'<>　]*/i;
 async function resolveLatLng(text) {
   const t = String(text || '').trim();
-  const p = parseLatLng(t);
+  const url = (t.match(MAP_URL_RE) || [])[0];
+  const p = parseLatLng(url || t);
   if (p) return p;
-  if (/^https:\/\//i.test(t)) {
-    const r = await api('resolveMapUrl', { url: t });
-    return r && r.lat ? { lat: r.lat, lng: r.lng } : null;
+  if (url) {
+    const r = await api('resolveMapUrl', { url });
+    if (r && r.lat) {
+      if (r.approx) toast(`「${r.name}」の名前から位置を探しました。地図で確認してください`, 5000);
+      return { lat: r.lat, lng: r.lng, name: r.name || '' };
+    }
   }
   return null;
 }
-const looksLikeLatLng = t => !!parseLatLng(t) || /^https:\/\/(maps\.app\.goo\.gl|goo\.gl\/maps|(www\.)?google\.[a-z.]+\/maps)/i.test(String(t).trim());
+const looksLikeLatLng = t => !!parseLatLng(t) || MAP_URL_RE.test(String(t));
 const outOfJapan = p => p && !(p.lat > 20 && p.lat < 46.5 && p.lng > 122 && p.lng < 154.5);
 const gmapSearchUrl = q => `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(q)}`;
 
@@ -614,10 +620,10 @@ function stopHtml(it, k, arrive, n) {
             ${it.place ? `<button class="btn small ghost" type="button" data-edclear="${k}">場所を外す</button>` : ''}</div>
             <ul class="cands" id="ed-cands-${k}"></ul></div>` : ''}
           <div class="field"><label for="ed-ll-${k}">位置（Googleマップの座標または共有URLを貼り付け）</label>
-            <input type="text" id="ed-ll-${k}" value="${hasPos(it) ? `${it.lat}, ${it.lng}` : ''}" placeholder="例：35.62509, 139.24361" inputmode="text" autocomplete="off">
+            <input type="text" id="ed-ll-${k}" value="${hasPos(it) ? `${it.lat}, ${it.lng}` : ''}" placeholder="例：35.62509, 139.24361 または https://maps.app.goo.gl/…" inputmode="text" autocomplete="off">
             <ol class="howto">
               <li><a href="${gmapSearchUrl(it.name + ' ' + ((state.spots.find(s => s.spotId === it.spotId) || {}).pref || ''))}" target="_blank" rel="noopener">Googleマップで「${name}」を開く</a></li>
-              <li>場所を右クリック（スマホは長押し）→ 一番上の数字を押すとコピーされます</li>
+              <li>場所を右クリック（スマホは長押し）→ 一番上の数字を押してコピー。または「共有」→「リンクをコピー」</li>
               <li>この欄に貼り付けて「変更を保存」</li>
             </ol>
             ${!custom && state.user && state.user.isAdmin ? `<label class="check"><input type="checkbox" id="ed-llm-${k}" checked> 百選データにも登録する（全員に反映・管理者）</label>` : ''}
@@ -786,7 +792,7 @@ function setupPlan() {
         const pos = await resolveLatLng(q);
         busy(btn, false);
         if (!pos) { toast('座標を読み取れませんでした'); return; }
-        const nm = prompt('この出発地の名前を入れてください（例：自宅）', '自宅') || '指定した地点';
+        const nm = prompt('この出発地の名前を入れてください（例：自宅）', pos.name || '自宅') || pos.name || '指定した地点';
         setOrigin({ name: nm.trim().slice(0, 40) || '指定した地点', lat: pos.lat, lng: pos.lng });
       } catch (ex) { busy(btn, false); toast(ex.message, 5000); }
       return;
@@ -838,7 +844,7 @@ function setupPlan() {
       try {
         const pos = await resolveLatLng(q);
         if (!pos) throw new Error('座標を読み取れませんでした');
-        state.customPlace = { place: `指定した地点（${pos.lat}, ${pos.lng}）`, lat: pos.lat, lng: pos.lng };
+        state.customPlace = { place: pos.name || `指定した地点（${pos.lat}, ${pos.lng}）`, lat: pos.lat, lng: pos.lng };
         $('#customCands').innerHTML = '';
         $('#customPlaceSet').innerHTML = `場所：<strong>${esc(state.customPlace.place)}</strong>`;
       } catch (ex) { toast(ex.message, 5000); }
@@ -1003,7 +1009,7 @@ function renderGuidePos(s) {
       '<p class="hint">管理者が登録するまでは、「計画」で「編集」を押すと自分の計画にだけ位置を入れられます。</p>'}
     <ol class="howto">
       <li><a href="${gmapSearchUrl(s.name + ' ' + s.pref)}" target="_blank" rel="noopener">Googleマップで「${esc(s.name)}」を開く</a></li>
-      <li>場所を右クリック（スマホは長押し）→ 一番上の数字を押すとコピーされます</li>
+      <li>場所を右クリック（スマホは長押し）→ 一番上の数字を押してコピー。または「共有」→「リンクをコピー」</li>
       ${admin ? '<li>上の欄に貼り付けて「位置を登録」</li>' : ''}
     </ol></details>`;
 }
@@ -1031,7 +1037,7 @@ async function saveStopEdit(k, btn) {
   if (custom && state.editPlace) Object.assign(it, state.editPlace);
   if (pos) {
     it.lat = pos.lat; it.lng = pos.lng;
-    if (custom && !it.place) it.place = `指定した地点（${pos.lat}, ${pos.lng}）`;
+    if (custom && !it.place) it.place = pos.name || `指定した地点（${pos.lat}, ${pos.lng}）`;
   } else if (!llText && custom) { it.lat = ''; it.lng = ''; }
   it.stay = Math.max(0, Math.min(1440, +$('#ed-stay-' + k).value || 0));
   it.note = $('#ed-note-' + k).value.trim().slice(0, 200);
