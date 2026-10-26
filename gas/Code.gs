@@ -25,7 +25,7 @@ const HEADERS = {
 /* ===================== ルーティング ===================== */
 const ROUTES = {
   register, login, forgotPassword, changePassword, logout, me,
-  getMaster, geocode,
+  getMaster, geocode, routeTimes,
   listPlans, savePlan, deletePlan,
   generateGuide, tts, planAdvice
 };
@@ -569,6 +569,117 @@ function geocode(d) {
   return { results };
 }
 
+/* ===================== 経路の所要時間 ===================== */
+const ROUTE_MODES = { car: 'DRIVING', walk: 'WALKING', bike: 'BICYCLING', transit: 'TRANSIT' };
+
+/** 「YYYY-MM-DD」「HH:MM」→ 日本時間の Date */
+function jstDate_(date, hm) {
+  const d = /^\d{4}-\d{2}-\d{2}$/.test(date || '') ? date : Utilities.formatDate(new Date(), 'Asia/Tokyo', 'yyyy-MM-dd');
+  const t = /^\d{1,2}:\d{2}$/.test(hm || '') ? hm.padStart(5, '0') : '09:00';
+  return new Date(`${d}T${t}:00+09:00`);
+}
+
+/** 名称＋都道府県から位置を探す（都道府県が合う結果のみ） */
+function geocodeOne_(name, pref) {
+  const q = `${norm_(name).replace(/[（(][^）)]*[）)]/g, '')} ${norm_(pref).split(/[・、\s]/)[0]}`.trim();
+  const cache = CacheService.getScriptCache();
+  const key = 'g1_' + md5_(q);
+  const hit = cache.get(key);
+  if (hit) return hit === 'none' ? null : JSON.parse(hit);
+  let out = null;
+  try {
+    const res = Maps.newGeocoder().setLanguage('ja').setRegion('jp').geocode(q);
+    const prefs = norm_(pref).split(/[・、,\s]+/).filter(Boolean);
+    const r = (res.results || []).find(x => !prefs.length || (x.address_components || []).some(c => prefs.indexOf(c.long_name) >= 0));
+    if (r) out = { lat: Math.round(r.geometry.location.lat * 1e5) / 1e5, lng: Math.round(r.geometry.location.lng * 1e5) / 1e5 };
+  } catch (e) { console.warn(e); }
+  cache.put(key, out ? JSON.stringify(out) : 'none', 21600);
+  return out;
+}
+
+/** 2地点間の所要時間。Googleの経路検索 → だめなら車の時間から推定 → 直線距離から目安 */
+function directions_(from, to, mode, depart) {
+  const r3 = v => Math.round(+v * 1000) / 1000;
+  const hour = Utilities.formatDate(depart, 'Asia/Tokyo', 'yyyyMMddHH');
+  const key = 'rt_' + md5_([mode, r3(from.lat), r3(from.lng), r3(to.lat), r3(to.lng), (mode === 'transit' || mode === 'car') ? hour : ''].join('|'));
+  const cache = CacheService.getScriptCache();
+  const hit = cache.get(key);
+  if (hit) return JSON.parse(hit);
+
+  const ask = m => {
+    try {
+      const df = Maps.newDirectionFinder()
+        .setOrigin(+from.lat, +from.lng).setDestination(+to.lat, +to.lng)
+        .setMode(Maps.DirectionFinder.Mode[ROUTE_MODES[m]]).setLanguage('ja').setRegion('jp');
+      if ((m === 'transit' || m === 'car') && depart.getTime() > Date.now()) df.setDepart(depart);
+      const res = df.getDirections();
+      if (res.status !== 'OK' || !res.routes.length) return null;
+      const leg = res.routes[0].legs[0];
+      let summary = '';
+      if (m === 'transit') {
+        summary = (leg.steps || []).filter(s => s.travel_mode === 'TRANSIT')
+          .map(s => { const l = (s.transit_details || {}).line || {}; return l.short_name || l.name || ''; })
+          .filter(Boolean).join('→');
+      }
+      return { minutes: Math.max(1, Math.round(leg.duration.value / 60)), km: Math.round(leg.distance.value / 100) / 10, summary };
+    } catch (e) { console.warn(e); return null; }
+  };
+
+  let out = ask(mode);
+  if (out) out.source = 'google';
+  if (!out && mode !== 'car') {
+    const car = ask('car');
+    if (car) {
+      const minutes = mode === 'transit' ? Math.round(car.minutes * 1.3 + 15)
+        : mode === 'bike' ? Math.round(car.km / 15 * 60)
+        : Math.round(car.km / 4 * 60);
+      out = { minutes, km: car.km, summary: '', source: 'estimate' };
+    }
+  }
+  if (!out) {
+    const R = 6371, rad = Math.PI / 180;
+    const x = Math.sin((to.lat - from.lat) * rad / 2) ** 2 + Math.cos(from.lat * rad) * Math.cos(to.lat * rad) * Math.sin((to.lng - from.lng) * rad / 2) ** 2;
+    const km = 2 * R * Math.asin(Math.sqrt(x)) * 1.3;
+    const kmh = { car: 40, walk: 3.5, bike: 15, transit: 30 }[mode];
+    out = { minutes: Math.round(km / kmh * 60), km: Math.round(km * 10) / 10, summary: '', source: 'line' };
+  }
+  cache.put(key, JSON.stringify(out), 21600);
+  return out;
+}
+
+/**
+ * 行程全体の所要時間を、出発時刻から順に計算。
+ * d: { mode, date, start, points:[{name, pref, lat, lng, stay, custom}] }
+ * 位置のない立ち寄り（custom）は、直前の場所に滞在したものとして扱う。
+ */
+function routeTimes(d) {
+  const mode = ROUTE_MODES[d.mode] ? d.mode : 'car';
+  const pts = (d.points || []).slice(0, 15).map(p => ({
+    name: String(p.name || '').slice(0, 80), pref: String(p.pref || '').slice(0, 30),
+    lat: +p.lat || 0, lng: +p.lng || 0, stay: Math.max(0, Math.min(1440, +p.stay || 0)), custom: !!p.custom
+  }));
+  pts.forEach(p => {
+    if (!(p.lat && p.lng) && !p.custom && p.name) {
+      const g = geocodeOne_(p.name, p.pref);
+      if (g) { p.lat = g.lat; p.lng = g.lng; p.geocoded = true; }
+    }
+  });
+  let t = jstDate_(d.date, d.start).getTime();
+  let last = pts[0] && pts[0].lat ? pts[0] : null;
+  const legs = [];
+  for (let i = 1; i < pts.length; i++) {
+    const to = pts[i];
+    let leg;
+    if (to.custom && !to.lat) leg = { minutes: 0, source: 'custom' };
+    else if (!last || !to.lat) leg = { minutes: null, source: 'none' };
+    else leg = directions_(last, to, mode, new Date(t));
+    legs.push(leg);
+    t += ((leg.minutes || 0) + to.stay) * 60000;
+    if (to.lat) last = to;
+  }
+  return { legs, points: pts.map(p => p.lat ? { lat: p.lat, lng: p.lng, geocoded: !!p.geocoded } : null) };
+}
+
 /* ===================== 計画へのAIアドバイス ===================== */
 function planAdvice(d, token) {
   auth_(token);
@@ -579,8 +690,9 @@ function planAdvice(d, token) {
   const prompt =
     `日帰り〜旅行の行程を確認してください。\n日付：${p.date || '未定'}　出発時刻：${p.start || '09:00'}　移動：${modeName}\n` +
     `出発地：${from}${p.returnHome !== false && from !== '未設定' ? '（最後は出発地へ戻る）' : ''}\n行程：\n${lines}\n` +
+    (d.schedule ? `時刻表（経路検索の所要時間を反映済み）：\n${String(d.schedule).slice(0, 2000)}\n` : '') +
     `メモ：${String(p.memo || '').slice(0, 500)}\n\n` +
-    `次の観点で、具体的に短く助言してください：時間配分の無理、順番の入れ替え案、季節・天候の注意、持ち物、休憩や食事の取り方。`;
+    `次の観点で、具体的に短く助言してください：移動時間を踏まえた時間配分の無理（出発時刻の前倒し・後ろ倒しの提案を含む）、順番の入れ替え案、季節・天候の注意、持ち物、休憩や食事の取り方。`;
   const json = gemini_(prop_('GEMINI_MODEL', 'gemini-2.5-flash'), {
     systemInstruction: { parts: [{ text: '日本の旅行計画アドバイザー。前置きや挨拶は書かず、本題から始める。見出し記号や太字記号（#や*）は使わず、「・」の箇条書きで最大8項目、全体で500字以内。' }] },
     contents: [{ role: 'user', parts: [{ text: prompt }] }],

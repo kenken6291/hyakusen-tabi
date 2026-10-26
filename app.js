@@ -399,6 +399,68 @@ function setOrigin(o) {
   saveDraft(); renderPlan();
 }
 
+/* ---------- 経路の所要時間（Googleの経路検索をGAS経由で） ---------- */
+const MODE_NAME = { car: '車', walk: '徒歩', bike: '自転車', transit: '電車・バス' };
+function routePoints() {
+  const p = state.plan, o = p.origin && p.origin.name ? p.origin : null, pts = [];
+  if (o) pts.push({ name: o.name, lat: o.lat, lng: o.lng, stay: 0, home: true });
+  p.items.forEach(it => {
+    const s = state.spots.find(x => x.spotId === it.spotId);
+    pts.push({ name: it.name, pref: s ? s.pref : '', lat: it.lat, lng: it.lng, stay: +it.stay || 0, custom: it.type === 'custom' });
+  });
+  if (o && p.returnHome !== false && p.items.length) pts.push({ name: o.name, lat: o.lat, lng: o.lng, stay: 0, home: true });
+  return pts;
+}
+// 座標は含めない（自動で位置が補われても再計算しないため）。出発地だけは座標を含める
+function routeSig(pts) {
+  const p = state.plan;
+  return JSON.stringify([p.mode, p.date, p.start, pts.map(x => x.home ? [x.name, x.lat, x.lng] : [x.name, x.stay, !!x.custom])]);
+}
+let routeTimer = null;
+function scheduleRoute(sig, pts) {
+  if (state.routePending === sig) return;
+  clearTimeout(routeTimer);
+  if (pts.length < 2) return;
+  state.routePending = sig;
+  routeTimer = setTimeout(async () => {
+    try {
+      const r = await api('routeTimes', { mode: state.plan.mode, date: state.plan.date, start: state.plan.start, points: pts });
+      if (state.routePending !== sig) return;
+      // 位置が見つかったスポットは計画に書き戻す（地図にも出る）
+      const off = state.plan.origin && state.plan.origin.name ? 1 : 0;
+      state.plan.items.forEach((it, k) => {
+        const q = r.points[k + off];
+        if (q && !hasPos(it)) { it.lat = q.lat; it.lng = q.lng; }
+      });
+      state.route = { sig, legs: r.legs };
+      saveDraft();
+    } catch (e) {
+      toast('移動時間の計算に失敗しました：' + e.message, 4000);
+      state.route = { sig, legs: null };
+    }
+    state.routePending = '';
+    renderPlan();
+  }, 600);
+}
+function estimateLeg(pts, i) {
+  const cur = pts[i];
+  if (cur.custom && !hasPos(cur)) return { minutes: 0, source: 'custom' };
+  let j = i - 1; while (j >= 0 && !hasPos(pts[j])) j--;
+  if (j < 0 || !hasPos(cur)) return { minutes: null, source: 'none' };
+  return { minutes: travelMin(pts[j], cur), source: 'line' };
+}
+function moveHtml(l, pending) {
+  if (!l || l.source === 'custom') return '';
+  if (l.minutes == null) return `<li class="move warn">位置が登録されていないため、移動時間を計算できません</li>`;
+  const mode = MODE_NAME[state.plan.mode];
+  const wait = pending ? '<span class="calc">経路を計算中…</span>' : '';
+  if (l.source === 'google') {
+    return `<li class="move route">${mode} 約${l.minutes}分（${l.km}km）${l.summary ? '　' + esc(l.summary) : ''}${wait}</li>`;
+  }
+  const note = l.source === 'estimate' ? '車の経路から推定' : '直線距離からの目安';
+  return `<li class="move">${mode} 約${l.minutes}分（${note}）${wait}</li>`;
+}
+
 function renderPlan() {
   syncItemCoords();
   const p = state.plan;
@@ -406,61 +468,71 @@ function renderPlan() {
   $('#planMode').value = p.mode; $('#planMemo').value = p.memo;
   renderOrigin();
   const o = p.origin && p.origin.name ? p.origin : null;
+
+  const pts = routePoints();
+  const sig = routeSig(pts);
+  const route = state.route && state.route.sig === sig && state.route.legs ? state.route : null;
+  if (!route && !(state.route && state.route.sig === sig)) scheduleRoute(sig, pts);
+  const pending = !route && state.routePending === sig;
+  const legAt = i => route ? route.legs[i - 1] : estimateLeg(pts, i);
+  const schedule = []; // AI相談用の時刻表
+
   let t = toMin(p.start);
-  let head = '';
+  let html = '';
   if (o) {
-    head = `<li class="stop home"><div class="t">${toHM(t)}</div><div class="dot"></div>
+    html += `<li class="stop home"><div class="t">${toHM(t)}</div><div class="dot"></div>
       <div class="body"><h4>出発：${esc(o.name)}</h4></div></li>`;
+    schedule.push(`${toHM(t)} 出発：${o.name}`);
   }
-  const html = head + p.items.map((it, i) => {
-    let move = '';
-    const prev = i > 0 ? p.items[i - 1] : o;
-    if (prev) {
-      const mv = travelMin(prev, it);
-      t += mv;
-      move = mv ? `<li class="move">移動 約${mv}分（直線距離からの目安）</li>` : '';
-    }
+  p.items.forEach((it, k) => {
+    const i = o ? k + 1 : k;
+    const l = i > 0 ? legAt(i) : null;
+    if (l && l.minutes) { t += l.minutes; schedule.push(`　移動 ${l.minutes}分（${MODE_NAME[p.mode]}${l.summary ? '：' + l.summary : ''}）`); }
+    html += moveHtml(l, pending);
     const arrive = t; t += (+it.stay || 0);
-    return `${move}<li class="stop">
+    schedule.push(`${toHM(arrive)} ${it.name}（滞在${+it.stay || 0}分）`);
+    html += `<li class="stop">
       <div class="t">${toHM(arrive)}</div><div class="dot"></div>
       <div class="body">
         <h4>${esc(it.name)}</h4>
         <div class="row">
-          <label>滞在 <input type="number" min="0" step="10" value="${esc(it.stay)}" data-stay="${i}" aria-label="${esc(it.name)}の滞在時間（分）"> 分</label>
-          <button class="btn small ghost" type="button" data-up="${i}" ${i === 0 ? 'disabled' : ''} aria-label="前へ">▲</button>
-          <button class="btn small ghost" type="button" data-down="${i}" ${i === p.items.length - 1 ? 'disabled' : ''} aria-label="後へ">▼</button>
+          <label>滞在 <input type="number" min="0" step="10" value="${esc(it.stay)}" data-stay="${k}" aria-label="${esc(it.name)}の滞在時間（分）"> 分</label>
+          <button class="btn small ghost" type="button" data-up="${k}" ${k === 0 ? 'disabled' : ''} aria-label="前へ">▲</button>
+          <button class="btn small ghost" type="button" data-down="${k}" ${k === p.items.length - 1 ? 'disabled' : ''} aria-label="後へ">▼</button>
           ${it.type === 'spot' ? `<button class="btn small" type="button" data-gd="${esc(it.spotId)}">案内を見る</button>` : ''}
-          <button class="btn small danger" type="button" data-rm="${i}">外す</button>
+          <button class="btn small danger" type="button" data-rm="${k}">外す</button>
         </div>
       </div></li>`;
-  }).join('');
-  let tail = '';
+  });
   if (p.items.length) {
     if (o && p.returnHome !== false) {
-      const back = travelMin(p.items[p.items.length - 1], o);
-      t += back;
-      tail = (back ? `<li class="move">移動 約${back}分</li>` : '') +
+      const l = legAt(pts.length - 1);
+      if (l && l.minutes) { t += l.minutes; schedule.push(`　移動 ${l.minutes}分`); }
+      html += moveHtml(l, pending) +
         `<li class="stop home"><div class="t">${toHM(t)}</div><div class="dot"></div>
           <div class="body"><h4>帰着：${esc(o.name)}</h4></div></li>`;
+      schedule.push(`${toHM(t)} 帰着：${o.name}`);
     } else {
-      tail = `<li class="move">行程終了の目安 ${toHM(t)}</li>`;
+      html += `<li class="move">行程終了の目安 ${toHM(t)}</li>`;
     }
+    if (t >= 24 * 60) html += `<li class="move warn">日付をまたぐ行程です。出発を早めるか、スポットや滞在時間を減らしてください。</li>`;
+  } else {
+    html += '<li class="empty">「さがす」でスポットの「計画に追加」を押すと、ここに行程が並びます。</li>';
   }
-  $('#stopList').innerHTML = p.items.length
-    ? html + tail
-    : head + '<li class="empty">「さがす」でスポットの「計画に追加」を押すと、ここに行程が並びます。</li>';
+  $('#stopList').innerHTML = html;
+  state.scheduleText = schedule.join('\n');
 
   layerPlan.clearLayers();
-  const pts = p.items.filter(hasPos).map(x => [+x.lat, +x.lng]);
+  const line = p.items.filter(hasPos).map(x => [+x.lat, +x.lng]);
   if (o && hasPos(o)) {
     L.circleMarker([+o.lat, +o.lng], { radius: 9, weight: 3, color: '#FFFFFF', fillColor: '#8A5A2B', fillOpacity: 1 })
       .bindTooltip('出発地：' + o.name).addTo(layerPlan);
-    pts.unshift([+o.lat, +o.lng]);
-    if (p.returnHome !== false && p.items.some(hasPos)) pts.push([+o.lat, +o.lng]);
+    line.unshift([+o.lat, +o.lng]);
+    if (p.returnHome !== false && p.items.some(hasPos)) line.push([+o.lat, +o.lng]);
   }
   p.items.filter(hasPos).forEach((x, i) => L.circleMarker([+x.lat, +x.lng], PIN).bindTooltip(`${i + 1}. ${x.name}`).addTo(layerPlan));
-  if (pts.length > 1) L.polyline(pts, { color: '#2B4F7A', weight: 4, dashArray: '6 6' }).addTo(layerPlan);
-  if (pts.length) mapPlan.fitBounds(pts, { padding: [30, 30], maxZoom: 13 });
+  if (line.length > 1) L.polyline(line, { color: '#2B4F7A', weight: 4, dashArray: '6 6' }).addTo(layerPlan);
+  if (line.length) mapPlan.fitBounds(line, { padding: [30, 30], maxZoom: 13 });
 }
 
 function setupPlan() {
@@ -556,7 +628,7 @@ function setupPlan() {
     if (!state.plan.items.length) { toast('行程を1つ以上入れてください'); return; }
     busy(e.target, true, 'AIが確認中…');
     try {
-      const r = await api('planAdvice', { plan: state.plan }, { auth: true });
+      const r = await api('planAdvice', { plan: state.plan, schedule: state.scheduleText }, { auth: true });
       $('#adviceBox').innerHTML = `<div class="advice">${esc(r.text)}</div>`;
     } catch (ex) { toast(ex.message, 4000); }
     busy(e.target, false);
