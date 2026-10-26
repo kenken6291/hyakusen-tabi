@@ -53,14 +53,14 @@ button,input,select,textarea{font:inherit;color:inherit}
 .btn.small{min-height:36px;padding:4px 10px;font-size:.88rem}
 
 /* ===== タブ ===== */
-.tabs{position:fixed;left:0;right:0;bottom:0;z-index:1000;display:grid;grid-template-columns:repeat(4,1fr);
+.tabs{position:fixed;left:0;right:0;bottom:0;z-index:1000;display:grid;grid-template-columns:repeat(5,1fr);
   background:var(--card);border-top:1px solid var(--line);padding-bottom:env(safe-area-inset-bottom,0px)}
 .tabs button{border:0;background:none;padding:8px 0 10px;cursor:pointer;color:var(--sub);font-size:.85rem;display:flex;flex-direction:column;align-items:center;gap:2px}
 .tabs button span.i{font-size:1.3rem;line-height:1}
 .tabs button[aria-selected="true"]{color:var(--ai);font-weight:700;box-shadow:inset 0 3px 0 var(--ai)}
 @media (min-width:900px){
   body{padding-bottom:0}
-  .tabs{position:static;max-width:1100px;margin:12px auto 0;grid-template-columns:repeat(4,max-content);gap:4px;border:0;background:none}
+  .tabs{position:static;max-width:1100px;margin:12px auto 0;grid-template-columns:repeat(5,max-content);gap:4px;border:0;background:none}
   .tabs button{flex-direction:row;padding:8px 16px;font-size:1rem;border-radius:var(--radius-s)}
   .tabs button[aria-selected="true"]{box-shadow:inset 0 -3px 0 var(--ai)}
 }
@@ -77,7 +77,11 @@ main{max-width:1100px;margin:0 auto;padding:16px}
 @media (prefers-color-scheme:dark){.chip[aria-pressed="true"]{color:#0F1A26}}
 .chipgroup-label{font-size:.85rem;color:var(--sub);margin:10px 0 4px}
 .filters{display:grid;grid-template-columns:1fr;gap:10px;margin:12px 0}
-@media (min-width:700px){.filters{grid-template-columns:200px 1fr}}
+@media (min-width:560px){.filters{grid-template-columns:1fr 1fr}.filters .field:last-of-type{grid-column:1 / -1}}
+@media (min-width:900px){.filters{grid-template-columns:170px 190px 1fr}.filters .field:last-of-type{grid-column:auto}}
+.regionchips{display:flex;flex-wrap:wrap;gap:6px;margin:2px 0 8px}
+.filterbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 6px}
+.filterbar .chip{font-size:.85rem;padding:3px 10px}
 .field{display:flex;flex-direction:column;gap:4px}
 .field label{font-size:.88rem;color:var(--sub)}
 input[type=text],input[type=email],input[type=password],input[type=date],input[type=time],input[type=number],select,textarea{
@@ -124,6 +128,24 @@ textarea{min-height:90px;resize:vertical}
 .move.route{color:var(--ink)}
 .move.warn{color:var(--warn)}
 .move .calc{margin-left:8px;color:var(--ai)}
+.addstop{border:1px solid var(--line);border-radius:var(--radius-s);background:var(--card);padding:10px 12px 12px;margin:0;display:flex;flex-direction:column;gap:10px}
+.addstop legend{font-weight:700;padding:0 4px}
+.presets{display:flex;flex-wrap:wrap;gap:6px}
+.addgrid{display:grid;grid-template-columns:1fr 1.6fr;gap:10px}
+.stop.custom .dot{border-color:#5B8C5A}
+.stop .tag{font-size:.75rem;border:1px solid #5B8C5A;color:#5B8C5A;border-radius:4px;padding:0 5px;margin-left:6px;vertical-align:middle}
+.stop .note{font-size:.88rem;color:var(--sub);margin:2px 0 0}
+.stop .place{font-size:.85rem;color:var(--sub)}
+.editbox{display:flex;flex-direction:column;gap:8px;margin-top:8px;padding-top:8px;border-top:1px dashed var(--line)}
+.editbox .addgrid input{min-height:40px}
+.move.route details{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-s);padding:6px 10px;margin:4px 0}
+.move.route summary{cursor:pointer;font-weight:700;color:var(--ai)}
+.rsteps{margin:6px 0 4px;padding-left:1.2em;font-size:.9rem;line-height:1.6}
+.rsteps li{margin:4px 0}
+.rs-time{font-weight:700;display:inline-block;min-width:3.2em}
+.rs-line{display:inline-block;border-left:4px solid var(--ai);padding-left:6px;margin:2px 0;font-weight:700}
+.rs-walk,.rs-drive{color:var(--sub)}
+.rs-link{font-size:.85rem;color:var(--ai)}
 .stop.home .body{background:var(--wash)}
 .origin{margin:12px 0 4px;padding:12px;border:1px solid var(--line);border-radius:var(--radius-s);background:var(--card)}
 .origin .withmic input{min-width:0}
@@ -157,6 +179,37 @@ textarea{min-height:90px;resize:vertical}
 
 /* ===== モーダル ===== */
 dialog{border:0;border-radius:var(--radius-l);padding:0;width:min(560px,94vw);max-height:90vh;background:var(--card);color:var(--ink)}
+dialog.wide{width:min(920px,96vw)}
+.memhead{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+.memseg{max-width:420px;margin:0 0 14px}
+.memgrid{list-style:none;padding:0;margin:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px}
+.memcard{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-l);overflow:hidden;cursor:pointer;display:flex;flex-direction:column;text-align:left;padding:0;width:100%}
+.memcard .ph{aspect-ratio:4/3;background:var(--wash);display:grid;place-items:center;font-size:2.4rem;overflow:hidden}
+.memcard .ph img{width:100%;height:100%;object-fit:cover}
+.memcard .tx{padding:8px 12px 12px}
+.memcard h3{font-size:1.05rem;margin:0}
+.memcard .meta{font-size:.82rem;color:var(--sub)}
+.memstrip{display:flex;gap:10px;overflow-x:auto;padding-bottom:6px;margin-bottom:8px}
+.memstrip .memcard{width:180px;flex:none}
+.medialist{list-style:none;padding:0;margin:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:8px}
+.medialist li{position:relative;border:1px solid var(--line);border-radius:var(--radius-s);overflow:hidden;background:var(--wash);aspect-ratio:1;display:grid;place-items:center;font-size:.8rem;text-align:center;padding:4px}
+.medialist img,.medialist video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.medialist .rm{position:absolute;top:2px;right:2px;z-index:2;width:32px;height:32px;border-radius:50%;border:0;background:rgba(0,0,0,.6);color:#fff;cursor:pointer}
+.medialist .badge{position:absolute;left:4px;bottom:4px;z-index:2;background:rgba(0,0,0,.6);color:#fff;border-radius:4px;padding:0 5px;font-size:.75rem}
+.medialist .urlbox{word-break:break-all;padding:6px}
+.upbar{position:relative;height:22px;border-radius:11px;background:var(--wash);overflow:hidden}
+.upbar span{position:absolute;inset:0 auto 0 0;width:0;background:var(--ai);transition:width .2s}
+.upbar em{position:relative;font-style:normal;font-size:.8rem;padding-left:10px;line-height:22px}
+.mv-meta{color:var(--sub);font-size:.9rem;margin:4px 0 10px}
+.mv-text{white-space:pre-wrap;margin:0 0 14px;max-width:40em}
+.mv-photos{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px;margin-bottom:12px}
+.mv-photos a{display:block;aspect-ratio:4/3;overflow:hidden;border-radius:var(--radius-s);background:var(--wash)}
+.mv-photos img{width:100%;height:100%;object-fit:cover}
+.mv-video{margin-bottom:12px}
+.mv-urls{list-style:none;padding:0;margin:0 0 12px;display:flex;flex-direction:column;gap:8px}
+.mv-urls a{display:flex;gap:10px;align-items:center;border:1px solid var(--line);border-radius:var(--radius-s);padding:8px;color:var(--ink);text-decoration:none;background:var(--card)}
+.mv-urls img{width:84px;height:56px;object-fit:cover;border-radius:4px;flex:none}
+.mv-urls small{display:block;color:var(--sub)}
 dialog::backdrop{background:rgba(15,25,20,.55)}
 .dlg{padding:20px}
 .dlg h2{font-size:1.35rem;margin-bottom:12px}
@@ -214,6 +267,7 @@ footer a{color:var(--ai)}
   <button role="tab" data-view="plan" aria-selected="false"><span class="i" aria-hidden="true">🗓</span>計画</button>
   <button role="tab" data-view="guide" aria-selected="false"><span class="i" aria-hidden="true">🎧</span>案内</button>
   <button role="tab" data-view="mine" aria-selected="false"><span class="i" aria-hidden="true">📒</span>マイ計画</button>
+  <button role="tab" data-view="memory" aria-selected="false"><span class="i" aria-hidden="true">📷</span>想い出</button>
 </nav>
 
 <main>
@@ -226,8 +280,12 @@ footer a{color:var(--ai)}
     <div class="chips" id="chipsOther"></div>
     <div class="filters">
       <div class="field">
+        <label for="selRegion">地方</label>
+        <select id="selRegion"><option value="">全国</option></select>
+      </div>
+      <div class="field">
         <label for="selPref">都道府県</label>
-        <select id="selPref"><option value="">全国</option></select>
+        <select id="selPref"><option value="">すべて</option></select>
       </div>
       <div class="field">
         <label for="txtKeyword">キーワード（名前・説明）</label>
@@ -240,6 +298,7 @@ footer a{color:var(--ai)}
     <div class="split">
       <div id="mapSearch" class="map tall" role="region" aria-label="地図"></div>
       <div>
+        <div class="filterbar" id="filterBar" aria-live="polite"></div>
         <p class="count" id="resultCount"></p>
         <ul class="spotlist" id="spotList"></ul>
       </div>
@@ -277,14 +336,43 @@ footer a{color:var(--ai)}
     <div class="plangrid">
       <div>
         <ol class="timeline" id="stopList"></ol>
-        <div class="field">
-          <label for="customStop">立ち寄りスポットを追加（食事・休憩など）</label>
-          <div class="withmic">
-            <input type="text" id="customStop" placeholder="例：道の駅でお昼">
-            <button class="mic" type="button" data-mic-target="customStop" aria-label="音声で入力">🎤</button>
-            <button class="btn" type="button" id="btnAddCustom">追加</button>
+        <fieldset class="addstop">
+          <legend>立ち寄りスポットを追加（食事・休憩など）</legend>
+          <div class="presets" role="group" aria-label="よく使う立ち寄り">
+            <button class="chip" type="button" data-preset="昼食|60">🍱 昼食 60分</button>
+            <button class="chip" type="button" data-preset="休憩|15">☕ 休憩 15分</button>
+            <button class="chip" type="button" data-preset="カフェ|30">🍰 カフェ 30分</button>
+            <button class="chip" type="button" data-preset="道の駅|30">🛒 道の駅 30分</button>
+            <button class="chip" type="button" data-preset="温泉|90">♨ 温泉 90分</button>
+            <button class="chip" type="button" data-preset="お土産|20">🎁 お土産 20分</button>
           </div>
-        </div>
+          <div class="field">
+            <label for="customStop">名前</label>
+            <div class="withmic">
+              <input type="text" id="customStop" placeholder="例：道の駅でお昼">
+              <button class="mic" type="button" data-mic-target="customStop" aria-label="音声で入力">🎤</button>
+            </div>
+          </div>
+          <div class="addgrid">
+            <div class="field"><label for="customStay">必要時間（分）</label><input type="number" id="customStay" min="0" max="1440" step="5" value="30"></div>
+            <div class="field"><label for="customPos">入れる位置</label><select id="customPos"></select></div>
+          </div>
+          <div class="field">
+            <label for="customPlace">場所（任意：店名・住所など。入れると移動時間も計算します）</label>
+            <div class="withmic">
+              <input type="text" id="customPlace" placeholder="例：道の駅 八王子滝山">
+              <button class="mic" type="button" data-mic-target="customPlace" aria-label="音声で入力">🎤</button>
+              <button class="btn" type="button" id="btnCustomPlace">検索</button>
+            </div>
+            <ul class="cands" id="customCands"></ul>
+            <span class="hint" id="customPlaceSet"></span>
+          </div>
+          <div class="field">
+            <label for="customNote">メモ（任意）</label>
+            <input type="text" id="customNote" maxlength="200" placeholder="例：予約 12:00、2名">
+          </div>
+          <button class="btn primary" type="button" id="btnAddCustom">行程に追加</button>
+        </fieldset>
         <div class="field" style="margin-top:12px">
           <label for="planMemo">メモ（持ち物・連絡事項など）</label>
           <div class="withmic">
@@ -295,6 +383,7 @@ footer a{color:var(--ai)}
         </div>
         <div class="actions">
           <button class="btn primary" id="btnSavePlan" type="button">計画を保存</button>
+          <button class="btn" id="btnReroute" type="button">経路を再検索</button>
           <button class="btn" id="btnRoute" type="button">Googleマップで道案内</button>
           <button class="btn" id="btnAdvice" type="button">AIに計画を見てもらう</button>
           <button class="btn ghost" id="btnNewPlan" type="button">新しい計画</button>
@@ -323,6 +412,11 @@ footer a{color:var(--ai)}
       </div>
       <div class="here" id="hereInfo"></div>
       <div id="guideContent"></div>
+      <div class="gsec" id="guideMem">
+        <h3>この場所の想い出</h3>
+        <div class="memstrip" id="guideMemList"></div>
+        <button class="btn" type="button" id="btnGuideMemory">この場所の想い出を記録</button>
+      </div>
     </div>
   </section>
 
@@ -330,6 +424,20 @@ footer a{color:var(--ai)}
   <section class="view" id="view-mine" aria-labelledby="h-mine">
     <h2 id="h-mine">保存した計画</h2>
     <ul class="planlist" id="planList"></ul>
+  </section>
+
+  <!-- 想い出 -->
+  <section class="view" id="view-memory" aria-labelledby="h-memory">
+    <div class="memhead">
+      <h2 id="h-memory">想い出の記録</h2>
+      <button class="btn primary" type="button" id="btnNewMemory">＋ 想い出を記録</button>
+    </div>
+    <p class="lead">出かけた場所の写真・動画・URL（ブログ、YouTube、アルバムなど）と、そのときの気持ちを残せます。</p>
+    <div class="segment memseg" role="tablist" aria-label="表示する想い出">
+      <button type="button" data-mscope="mine" aria-selected="true">自分の想い出</button>
+      <button type="button" data-mscope="all" aria-selected="false">みんなの想い出</button>
+    </div>
+    <ul class="memgrid" id="memList"></ul>
   </section>
 </main>
 
@@ -397,17 +505,75 @@ footer a{color:var(--ai)}
   </div>
 </dialog>
 
+<!-- 想い出の記録・編集 -->
+<dialog id="dlgMemory" aria-labelledby="memTitle">
+  <div class="dlg">
+    <button class="close" type="button" data-close aria-label="閉じる">×</button>
+    <h2 id="memTitle">想い出を記録</h2>
+    <form class="form" id="formMemory">
+      <div class="field"><label for="memTitleIn">タイトル</label><input type="text" id="memTitleIn" maxlength="80" required placeholder="例：高尾山の紅葉、最高でした"></div>
+      <div class="addgrid">
+        <div class="field"><label for="memDate">日付</label><input type="date" id="memDate"></div>
+        <div class="field"><label for="memVis">公開範囲</label>
+          <select id="memVis"><option value="private">自分だけ</option><option value="members">会員に公開</option></select></div>
+      </div>
+      <div class="field"><label for="memPlace">場所（百選の名前を入れると案内画面にも出ます）</label>
+        <div class="withmic">
+          <input type="text" id="memPlace" list="memPlaceList" maxlength="80" placeholder="例：高尾山">
+          <button class="btn" type="button" id="btnMemHere">現在地</button>
+        </div>
+        <datalist id="memPlaceList"></datalist>
+        <span class="hint" id="memPosInfo"></span>
+      </div>
+      <div class="field"><label for="memPlan">計画とひも付け（任意）</label><select id="memPlan"></select></div>
+      <div class="field"><label for="memText">本文</label>
+        <div class="withmic">
+          <textarea id="memText" maxlength="5000" placeholder="マイクで話して入力できます"></textarea>
+          <button class="mic" type="button" data-mic-target="memText" aria-label="音声で入力">🎤</button>
+        </div>
+      </div>
+      <div class="field"><label for="memFiles">写真・動画を追加</label>
+        <input type="file" id="memFiles" accept="image/*,video/*" multiple>
+        <p class="hint">写真は自動で縮小して保存します。動画は1本100MBまで。長い動画はYouTubeなどに上げて、下のURLで登録してください。</p>
+      </div>
+      <div class="field"><label for="memUrl">URLを追加（ブログ・YouTube・アルバムなど）</label>
+        <div class="withmic">
+          <input type="url" id="memUrl" placeholder="https://">
+          <button class="btn" type="button" id="btnMemUrl">追加</button>
+        </div>
+      </div>
+      <ul class="medialist" id="memMedia" aria-label="登録する写真・動画・URL"></ul>
+      <div class="upbar" id="memProgress" hidden><span></span><em></em></div>
+      <p class="hint">写真・動画はGoogleドライブに「リンクを知っている人だけが見られる」設定で保存します。</p>
+      <p class="err" data-err></p>
+      <div class="actions">
+        <button class="btn primary" type="submit" id="btnMemSave">想い出を保存</button>
+        <button class="btn danger" type="button" id="btnMemDelete" hidden>この想い出を削除</button>
+      </div>
+    </form>
+  </div>
+</dialog>
+
+<!-- 想い出を見る -->
+<dialog id="dlgMemoryView" class="wide" aria-labelledby="memViewTitle">
+  <div class="dlg">
+    <button class="close" type="button" data-close aria-label="閉じる">×</button>
+    <div id="memView"></div>
+  </div>
+</dialog>
+
 <!-- 使い方 -->
 <dialog id="dlgHelp" aria-labelledby="helpTitle">
   <div class="dlg">
     <button class="close" type="button" data-close aria-label="閉じる">×</button>
     <h2 id="helpTitle">使い方</h2>
     <ol class="steps">
-      <li><h3>行き先をさがす</h3><p>「さがす」で分野（低山・サイクリング・遊歩道・名水・滝・棚田・桜・紅葉・道・森林浴など）を押し、都道府県やキーワードで絞り込みます。地図のピンを押すと名前が出ます。</p></li>
-      <li><h3>出発地を決める</h3><p>「計画」の出発地に駅名や住所を入れて「検索」、または「現在地」を押します。一度使った出発地は次から候補に出ます。「最後は出発地に戻る」にすると帰りの時刻も計算します。移動時間はGoogleの経路検索（電車・バスは乗り継ぎを含む）で計算し、各スポットの到着時刻に反映されます。</p></li>
+      <li><h3>行き先をさがす</h3><p>「さがす」で分野（低山・サイクリング・遊歩道・名水・滝・棚田・桜・紅葉・道・森林浴など）を押し、地方・都道府県やキーワードで絞り込みます。地方を選ぶと、都道府県の一覧がその地方だけになります（かっこ内は件数）。地図のピンを押すと名前が出ます。</p></li>
+      <li><h3>出発地を決める</h3><p>「計画」の出発地に駅名や住所を入れて「検索」、または「現在地」を押します。一度使った出発地は次から候補に出ます。「最後は出発地に戻る」にすると帰りの時刻も計算します。移動はGoogleマップの経路検索で自動的に調べ、乗る路線・乗換駅・発着時刻まで行程表に入ります（区間を押すと開閉）。計画を保存すると経路も一緒に残ります。時間がたって電車の時刻が変わりそうなときは「経路を再検索」を押してください。</p></li>
       <li><h3>計画に入れる</h3><p>気に入ったスポットの「計画に追加」を押すと「計画」の行程表に入ります。▲▼で順番を入れ替え、滞在時間（分）を変えると到着時刻が自動で計算されます。</p></li>
-      <li><h3>立ち寄りやメモを足す</h3><p>お昼や休憩などは「立ち寄りスポットを追加」へ。🎤を押して話せば文字になります。言葉の間が少し空いても途切れず、話し終えて数秒たつと自動で止まります。もう一度🎤を押しても止まります。</p></li>
+      <li><h3>立ち寄りやメモを足す</h3><p>お昼や休憩などは「立ち寄りスポットを追加」へ。よく使うボタン（昼食60分など）を押すと名前と時間が入ります。入れる位置と場所（店名など）も選べます。追加したあとも「編集」で名前・時間・場所・メモを直せます。🎤を押して話せば文字になります。言葉の間が少し空いても途切れず、話し終えて数秒たつと自動で止まります。もう一度🎤を押しても止まります。</p></li>
       <li><h3>保存して道案内</h3><p>「計画を保存」で「マイ計画」に残ります（ログインが必要です）。「Googleマップで道案内」で、出発地（未設定なら現在地）から順番どおりのルートが開きます。</p></li>
+      <li><h3>想い出を残す</h3><p>「想い出」タブの「＋ 想い出を記録」で、写真・動画・URL（ブログやYouTubeなど）と文章を保存できます。場所に百選の名前を入れると、その場所の案内画面にも表示されます。「会員に公開」にすると、ほかの会員も見られます。</p></li>
       <li><h3>現地で音声ガイドを聞く</h3><p>スポットの「案内を見る」→「解説を作る」で、歴史・見どころ・注意点が表示されます。「▶ 読み上げ」で音声ガイドが流れます。紹介動画がある場所は上に表示されます。</p></li>
     </ol>
     <p class="hint">音声入力はChrome・Edge・Safariで使えます。初回はマイクの使用を許可してください。</p>

@@ -176,3 +176,10 @@
 - 地図のピンをCanvas描画に変更し、数百件でも軽く動きます。
 - 一度作ったAI解説は端末に保存し、次からは通信なしで表示。音声も同じ文章はその場で再利用します。
 - スプレッドシートを手で直したときは `clearMasterCache` を実行すると、全員の画面に反映されます。自動にしたい場合は、トリガーで `onEditClearCache` を「スプレッドシートから・編集時」に登録してください。
+
+### v1.9.0 想い出の記録
+- 「想い出」タブで、写真・動画・URL（ブログ、YouTube、アルバムなど）と文章を記録できます。公開範囲は「自分だけ」「会員に公開」。
+- 写真は端末で長辺1920pxに縮小してから送信。動画は1本100MBまで（3MBずつ分割して、Googleドライブの再開可能アップロードで保存）。
+- 保存先はスクリプトプロパティ `MEMORY_FOLDER_ID` のフォルダ。未設定なら初回に「hyakusen-tabi-memories」フォルダを自動作成します（DRIVE_FOLDER_ID があればその中）。
+- 画面に表示するため、写真・動画は「リンクを知っている全員が閲覧可」で保存します。想い出を削除したり写真を外したりすると、ファイルはゴミ箱に移ります。
+- シート `Memories`：memoryId, userId, nickname, spotId, spotName, planId, planTitle, title, date, text, mediaJson, visibility, lat, lng, createdAt, updatedAt

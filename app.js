@@ -12,11 +12,25 @@ const LS = {
 };
 const PREFS = ['北海道','青森県','岩手県','宮城県','秋田県','山形県','福島県','茨城県','栃木県','群馬県','埼玉県','千葉県','東京都','神奈川県','新潟県','富山県','石川県','福井県','山梨県','長野県','岐阜県','静岡県','愛知県','三重県','滋賀県','京都府','大阪府','兵庫県','奈良県','和歌山県','鳥取県','島根県','岡山県','広島県','山口県','徳島県','香川県','愛媛県','高知県','福岡県','佐賀県','長崎県','熊本県','大分県','宮崎県','鹿児島県','沖縄県'];
 
+// 地方区分（8地方区分）
+const REGIONS = [
+  ['北海道', ['北海道']],
+  ['東北', ['青森県','岩手県','宮城県','秋田県','山形県','福島県']],
+  ['関東', ['茨城県','栃木県','群馬県','埼玉県','千葉県','東京都','神奈川県']],
+  ['中部', ['新潟県','富山県','石川県','福井県','山梨県','長野県','岐阜県','静岡県','愛知県']],
+  ['近畿', ['三重県','滋賀県','京都府','大阪府','兵庫県','奈良県','和歌山県']],
+  ['中国', ['鳥取県','島根県','岡山県','広島県','山口県']],
+  ['四国', ['徳島県','香川県','愛媛県','高知県']],
+  ['九州・沖縄', ['福岡県','佐賀県','長崎県','熊本県','大分県','宮崎県','鹿児島県','沖縄県']]
+];
+const REGION_OF = {}; REGIONS.forEach(([r, ps]) => ps.forEach(p => REGION_OF[p] = r));
+const prefsOf = s => String(s.pref || '').split(/[・、,\s]+/).filter(Boolean);
+
 const state = {
   token: LS.get('token', ''),
   user: LS.get('user', null),
   categories: [], spots: [],
-  filter: { cat: '', pref: '', kw: '' },
+  filter: Object.assign({ cat: '', region: '', pref: '', kw: '' }, LS.get('filter', {})),
   plan: LS.get('draft', null) || newPlan(),
   plans: [],
   guideSpot: null, guideData: null
@@ -288,7 +302,7 @@ function applyMaster(m) {
   state.masterVersion = m.version || '';
   state.categories = m.categories || [];
   state.spots = (m.spots || []).map(s => ({ ...s, lat: +s.lat, lng: +s.lng }));
-  renderChips(); renderSpots();
+  renderChips(); renderPlaceSelects(); renderSpots();
 }
 const catOf = id => state.categories.find(c => c.categoryId === id) || { name: id, icon: '📍' };
 
@@ -297,15 +311,57 @@ function renderChips() {
   const all = `<button class="chip" type="button" data-cat="" aria-pressed="${!state.filter.cat}">すべて</button>`;
   $('#chipsMain').innerHTML = all + state.categories.filter(c => c.group === 'main').map(mk).join('');
   $('#chipsOther').innerHTML = state.categories.filter(c => c.group !== 'main').map(mk).join('');
-  $$('.chip').forEach(b => b.onclick = () => { state.filter.cat = b.dataset.cat; renderChips(); renderSpots(); });
+  $$('#chipsMain .chip, #chipsOther .chip').forEach(b => b.onclick = () => {
+    state.filter.cat = b.dataset.cat; renderChips(); renderPlaceSelects(); renderSpots();
+  });
 }
 
-function filteredSpots() {
-  const { cat, pref, kw } = state.filter;
+/** 地方・都道府県以外の条件（分野・キーワード）で絞ったもの。件数表示に使う */
+function baseSpots() {
+  const { cat, kw } = state.filter;
   const k = kw.trim().toLowerCase();
-  return state.spots.filter(s =>
-    (!cat || s.category === cat) && (!pref || String(s.pref).split(/[・、,\s]+/).includes(pref)) &&
+  return state.spots.filter(s => (!cat || s.category === cat) &&
     (!k || (s.name + s.description + s.pref).toLowerCase().includes(k)));
+}
+function filteredSpots() {
+  const { region, pref } = state.filter;
+  return baseSpots().filter(s => {
+    const ps = prefsOf(s);
+    if (pref) return ps.includes(pref);
+    if (region) return ps.some(p => REGION_OF[p] === region);
+    return true;
+  });
+}
+/** 地方・都道府県の選択肢（件数つき）を作り直す */
+function renderPlaceSelects() {
+  const base = baseSpots();
+  const prefCount = {}, regionCount = {};
+  base.forEach(s => {
+    const ps = prefsOf(s);
+    ps.forEach(p => prefCount[p] = (prefCount[p] || 0) + 1);
+    [...new Set(ps.map(p => REGION_OF[p]).filter(Boolean))].forEach(r => regionCount[r] = (regionCount[r] || 0) + 1);
+  });
+  const f = state.filter;
+  $('#selRegion').innerHTML = `<option value="">全国（${base.length}）</option>` +
+    REGIONS.map(([r]) => `<option value="${r}" ${f.region === r ? 'selected' : ''}>${r}（${regionCount[r] || 0}）</option>`).join('');
+  const prefs = f.region ? REGIONS.find(x => x[0] === f.region)[1] : PREFS;
+  if (f.pref && !prefs.includes(f.pref)) f.pref = '';
+  $('#selPref').innerHTML = `<option value="">${f.region ? f.region + 'すべて' : 'すべて'}</option>` +
+    prefs.map(p => `<option value="${p}" ${f.pref === p ? 'selected' : ''} ${prefCount[p] ? '' : 'class="zero"'}>${p}（${prefCount[p] || 0}）</option>`).join('');
+  renderFilterBar();
+}
+/** 選んでいる条件を表示し、×で個別に外せるようにする */
+function renderFilterBar() {
+  const f = state.filter, tags = [];
+  if (f.cat) tags.push(['cat', catOf(f.cat).name]);
+  if (f.region) tags.push(['region', f.region]);
+  if (f.pref) tags.push(['pref', f.pref]);
+  if (f.kw.trim()) tags.push(['kw', `「${f.kw.trim()}」`]);
+  $('#filterBar').innerHTML = tags.length
+    ? tags.map(([k, v]) => `<button class="chip" type="button" data-unset="${k}" aria-label="${esc(v)}の条件を外す">${esc(v)} ×</button>`).join('') +
+      (tags.length > 1 ? `<button class="btn small ghost" type="button" data-unset="all">条件をすべて外す</button>` : '')
+    : '';
+  LS.set('filter', f);
 }
 
 let lastRenderKey = '';
@@ -339,9 +395,22 @@ function renderSpots() {
 }
 
 function setupSearch() {
-  $('#selPref').innerHTML += PREFS.map(p => `<option>${p}</option>`).join('');
-  $('#selPref').onchange = e => { state.filter.pref = e.target.value; renderSpots(); };
-  let t; $('#txtKeyword').addEventListener('input', e => { clearTimeout(t); t = setTimeout(() => { state.filter.kw = e.target.value; renderSpots(); }, 250); });
+  $('#selRegion').onchange = e => { state.filter.region = e.target.value; state.filter.pref = ''; renderPlaceSelects(); renderSpots(); };
+  $('#selPref').onchange = e => {
+    state.filter.pref = e.target.value;
+    if (e.target.value && !state.filter.region) state.filter.region = REGION_OF[e.target.value] || '';
+    renderPlaceSelects(); renderSpots();
+  };
+  $('#txtKeyword').value = state.filter.kw;
+  $('#filterBar').addEventListener('click', e => {
+    const b = e.target.closest('[data-unset]'); if (!b) return;
+    const k = b.dataset.unset;
+    if (k === 'all') Object.assign(state.filter, { cat: '', region: '', pref: '', kw: '' });
+    else { state.filter[k] = ''; if (k === 'region') state.filter.pref = ''; }
+    if (k === 'kw' || k === 'all') $('#txtKeyword').value = '';
+    renderChips(); renderPlaceSelects(); renderSpots();
+  });
+  let t; $('#txtKeyword').addEventListener('input', e => { clearTimeout(t); t = setTimeout(() => { state.filter.kw = e.target.value; renderPlaceSelects(); renderSpots(); }, 250); });
   $('#spotList').addEventListener('click', e => {
     const b = e.target.closest('button'); if (!b) return;
     if (b.dataset.add) addSpotToPlan(b.dataset.add);
@@ -414,17 +483,17 @@ function routePoints() {
 // 座標は含めない（自動で位置が補われても再計算しないため）。出発地だけは座標を含める
 function routeSig(pts) {
   const p = state.plan;
-  return JSON.stringify([p.mode, p.date, p.start, pts.map(x => x.home ? [x.name, x.lat, x.lng] : [x.name, x.stay, !!x.custom])]);
+  return JSON.stringify([p.mode, p.date, p.start, pts.map(x => x.home || x.custom ? [x.name, x.stay, !!x.custom, x.lat || 0, x.lng || 0] : [x.name, x.stay])]);
 }
 let routeTimer = null;
-function scheduleRoute(sig, pts) {
-  if (state.routePending === sig) return;
+function scheduleRoute(sig, pts, fresh) {
+  if (state.routePending === sig && !fresh) return;
   clearTimeout(routeTimer);
   if (pts.length < 2) return;
   state.routePending = sig;
   routeTimer = setTimeout(async () => {
     try {
-      const r = await api('routeTimes', { mode: state.plan.mode, date: state.plan.date, start: state.plan.start, points: pts });
+      const r = await api('routeTimes', { mode: state.plan.mode, date: state.plan.date, start: state.plan.start, points: pts, fresh: !!fresh });
       if (state.routePending !== sig) return;
       // 位置が見つかったスポットは計画に書き戻す（地図にも出る）
       const off = state.plan.origin && state.plan.origin.name ? 1 : 0;
@@ -432,11 +501,11 @@ function scheduleRoute(sig, pts) {
         const q = r.points[k + off];
         if (q && !hasPos(it)) { it.lat = q.lat; it.lng = q.lng; }
       });
-      state.route = { sig, legs: r.legs };
+      state.plan.route = { sig, legs: r.legs, at: Date.now() }; // 計画に経路を盛り込む（保存対象）
       saveDraft();
     } catch (e) {
-      toast('移動時間の計算に失敗しました：' + e.message, 4000);
-      state.route = { sig, legs: null };
+      toast('経路の検索に失敗しました：' + e.message, 4000);
+      state.routeFail = sig;
     }
     state.routePending = '';
     renderPlan();
@@ -449,20 +518,96 @@ function estimateLeg(pts, i) {
   if (j < 0 || !hasPos(cur)) return { minutes: null, source: 'none' };
   return { minutes: travelMin(pts[j], cur), source: 'line' };
 }
+const GMODE = { car: 'driving', walk: 'walking', bike: 'bicycling', transit: 'transit' };
+function stepHtml(s) {
+  if (s.type === 'transit') {
+    return `<li class="rs-transit"><span class="rs-time">${esc(s.dep)}</span> ${esc(s.from)} 発<br>
+      <span class="rs-line">${esc(s.line || s.vehicle)}</span>${s.headsign ? `（${esc(s.headsign)}行）` : ''}${s.stops ? `　${s.stops}駅` : ''}<br>
+      <span class="rs-time">${esc(s.arr)}</span> ${esc(s.to)} 着</li>`;
+  }
+  if (s.type === 'walk') return `<li class="rs-walk">徒歩 ${s.minutes}分${s.text ? '　' + esc(s.text) : ''}</li>`;
+  return `<li class="rs-drive">${esc(s.text)}（${s.km}km・${s.minutes}分）</li>`;
+}
 function moveHtml(l, pending) {
   if (!l || l.source === 'custom') return '';
   if (l.minutes == null) return `<li class="move warn">位置が登録されていないため、移動時間を計算できません</li>`;
   const mode = MODE_NAME[state.plan.mode];
-  const wait = pending ? '<span class="calc">経路を計算中…</span>' : '';
+  const calc = pending ? '<span class="calc">経路を検索中…</span>' : '';
+  const link = l.from && l.to
+    ? `<a class="rs-link" href="https://www.google.com/maps/dir/?api=1&origin=${l.from.join(',')}&destination=${l.to.join(',')}&travelmode=${GMODE[state.plan.mode]}" target="_blank" rel="noopener">この区間をGoogleマップで見る</a>` : '';
   if (l.source === 'google') {
-    return `<li class="move route">${mode} 約${l.minutes}分（${l.km}km）${l.summary ? '　' + esc(l.summary) : ''}${wait}</li>`;
+    const head = `${mode} 約${l.minutes}分${l.wait ? `（待ち${l.wait}分を含む）` : ''}　${l.km}km${l.summary ? '　' + esc(l.summary) : ''}`;
+    if (l.steps && l.steps.length) {
+      return `<li class="move route"><details ${state.plan.mode === 'transit' ? 'open' : ''}><summary>${head}${calc}</summary>
+        <ol class="rsteps">${l.steps.map(stepHtml).join('')}</ol>${link}</details></li>`;
+    }
+    return `<li class="move route">${head}${calc}<br>${link}</li>`;
   }
   const note = l.source === 'estimate' ? '車の経路から推定' : '直線距離からの目安';
-  return `<li class="move">${mode} 約${l.minutes}分（${note}）${wait}</li>`;
+  return `<li class="move">${mode} 約${l.minutes}分（${note}）${calc}${link ? '<br>' + link : ''}</li>`;
+}
+
+/** 行程の1項目。立ち寄り（custom）は名前・場所も編集できる */
+function stopHtml(it, k, arrive, n) {
+  const custom = it.type === 'custom';
+  const editing = state.editIndex === k;
+  const name = esc(it.name);
+  const view = `
+        <h4>${name}${custom ? '<span class="tag">立ち寄り</span>' : ''}</h4>
+        ${custom && it.place ? `<div class="place">📍 ${esc(it.place)}</div>` : ''}
+        ${it.note ? `<p class="note">${esc(it.note)}</p>` : ''}
+        <div class="row">
+          <label>${custom ? '必要時間' : '滞在'} <input type="number" min="0" max="1440" step="5" value="${esc(it.stay)}" data-stay="${k}" aria-label="${name}の${custom ? '必要時間' : '滞在時間'}（分）"> 分</label>
+          <button class="btn small ghost" type="button" data-up="${k}" ${k === 0 ? 'disabled' : ''} aria-label="${name}を前へ">▲</button>
+          <button class="btn small ghost" type="button" data-down="${k}" ${k === n - 1 ? 'disabled' : ''} aria-label="${name}を後へ">▼</button>
+          <button class="btn small" type="button" data-edit="${k}" aria-expanded="${editing}">編集</button>
+          ${custom ? '' : `<button class="btn small" type="button" data-gd="${esc(it.spotId)}">案内を見る</button>`}
+          <button class="btn small danger" type="button" data-rm="${k}">${custom ? '削除' : '外す'}</button>
+        </div>`;
+  const form = !editing ? '' : `
+        <div class="editbox" data-editbox="${k}">
+          ${custom ? `<div class="field"><label for="ed-name-${k}">名前</label><input type="text" id="ed-name-${k}" value="${name}" maxlength="60"></div>` : ''}
+          <div class="addgrid">
+            <div class="field"><label for="ed-stay-${k}">${custom ? '必要時間' : '滞在時間'}（分）</label><input type="number" id="ed-stay-${k}" min="0" max="1440" step="5" value="${esc(it.stay)}"></div>
+            <div class="field"><label for="ed-note-${k}">メモ</label><input type="text" id="ed-note-${k}" value="${esc(it.note || '')}" maxlength="200"></div>
+          </div>
+          ${custom ? `<div class="field"><label for="ed-place-${k}">場所（任意）</label>
+            <div class="withmic"><input type="text" id="ed-place-${k}" value="${esc(it.place || '')}" placeholder="店名・住所など">
+            <button class="btn small" type="button" data-edsearch="${k}">検索</button>
+            ${it.place ? `<button class="btn small ghost" type="button" data-edclear="${k}">場所を外す</button>` : ''}</div>
+            <ul class="cands" id="ed-cands-${k}"></ul></div>` : ''}
+          <div class="row">
+            <button class="btn small primary" type="button" data-edsave="${k}">変更を保存</button>
+            <button class="btn small ghost" type="button" data-edcancel="${k}">取り消す</button>
+          </div>
+        </div>`;
+  return `<li class="stop${custom ? ' custom' : ''}">
+      <div class="t">${toHM(arrive)}</div><div class="dot"></div>
+      <div class="body">${view}${form}</div></li>`;
+}
+/** 「入れる位置」の選択肢 */
+function renderCustomPos() {
+  const sel = $('#customPos'); if (!sel) return;
+  const keep = sel.value;
+  const items = state.plan.items;
+  sel.innerHTML = `<option value="end">いちばん最後</option><option value="0">いちばん最初</option>` +
+    items.map((it, i) => `<option value="${i + 1}">「${esc(it.name)}」のあと</option>`).join('');
+  if ([...sel.options].some(o => o.value === keep)) sel.value = keep;
+}
+async function placeSearch(q) {
+  const r = await api('geocode', { query: q });
+  return r.results || [];
 }
 
 function renderPlan() {
+  // 編集中の入力値は、経路の再計算などで描き直しても消えないように控えておく
+  const keep = {};
+  if (state.editIndex != null) ['name', 'stay', 'note', 'place'].forEach(f => {
+    const el = $(`#ed-${f}-${state.editIndex}`); if (el) keep[f] = el.value;
+  });
+  if (state.editIndex != null && state.editIndex >= state.plan.items.length) state.editIndex = null;
   syncItemCoords();
+  renderCustomPos();
   const p = state.plan;
   $('#planTitle').value = p.title; $('#planDate').value = p.date; $('#planStart').value = p.start;
   $('#planMode').value = p.mode; $('#planMemo').value = p.memo;
@@ -471,8 +616,9 @@ function renderPlan() {
 
   const pts = routePoints();
   const sig = routeSig(pts);
-  const route = state.route && state.route.sig === sig && state.route.legs ? state.route : null;
-  if (!route && !(state.route && state.route.sig === sig)) scheduleRoute(sig, pts);
+  const saved = p.route && p.route.sig === sig && p.route.legs ? p.route : null;
+  const route = saved;
+  if (!route && state.routeFail !== sig) scheduleRoute(sig, pts);
   const pending = !route && state.routePending === sig;
   const legAt = i => route ? route.legs[i - 1] : estimateLeg(pts, i);
   const schedule = []; // AI相談用の時刻表
@@ -487,27 +633,23 @@ function renderPlan() {
   p.items.forEach((it, k) => {
     const i = o ? k + 1 : k;
     const l = i > 0 ? legAt(i) : null;
-    if (l && l.minutes) { t += l.minutes; schedule.push(`　移動 ${l.minutes}分（${MODE_NAME[p.mode]}${l.summary ? '：' + l.summary : ''}）`); }
+    if (l && l.minutes) {
+      t += l.minutes;
+      schedule.push(`　移動 ${l.minutes}分（${MODE_NAME[p.mode]}${l.wait ? '・待ち' + l.wait + '分' : ''}${l.summary ? '：' + l.summary : ''}）`);
+      (l.steps || []).filter(s => s.type === 'transit').forEach(s => schedule.push(`　　${s.dep} ${s.from} → ${s.line} → ${s.arr} ${s.to}`));
+    }
     html += moveHtml(l, pending);
     const arrive = t; t += (+it.stay || 0);
     schedule.push(`${toHM(arrive)} ${it.name}（滞在${+it.stay || 0}分）`);
-    html += `<li class="stop">
-      <div class="t">${toHM(arrive)}</div><div class="dot"></div>
-      <div class="body">
-        <h4>${esc(it.name)}</h4>
-        <div class="row">
-          <label>滞在 <input type="number" min="0" step="10" value="${esc(it.stay)}" data-stay="${k}" aria-label="${esc(it.name)}の滞在時間（分）"> 分</label>
-          <button class="btn small ghost" type="button" data-up="${k}" ${k === 0 ? 'disabled' : ''} aria-label="前へ">▲</button>
-          <button class="btn small ghost" type="button" data-down="${k}" ${k === p.items.length - 1 ? 'disabled' : ''} aria-label="後へ">▼</button>
-          ${it.type === 'spot' ? `<button class="btn small" type="button" data-gd="${esc(it.spotId)}">案内を見る</button>` : ''}
-          <button class="btn small danger" type="button" data-rm="${k}">外す</button>
-        </div>
-      </div></li>`;
+    html += stopHtml(it, k, arrive, p.items.length);
   });
   if (p.items.length) {
     if (o && p.returnHome !== false) {
       const l = legAt(pts.length - 1);
-      if (l && l.minutes) { t += l.minutes; schedule.push(`　移動 ${l.minutes}分`); }
+      if (l && l.minutes) {
+        t += l.minutes; schedule.push(`　移動 ${l.minutes}分${l.summary ? '（' + l.summary + '）' : ''}`);
+        (l.steps || []).filter(s => s.type === 'transit').forEach(s => schedule.push(`　　${s.dep} ${s.from} → ${s.line} → ${s.arr} ${s.to}`));
+      }
       html += moveHtml(l, pending) +
         `<li class="stop home"><div class="t">${toHM(t)}</div><div class="dot"></div>
           <div class="body"><h4>帰着：${esc(o.name)}</h4></div></li>`;
@@ -520,6 +662,7 @@ function renderPlan() {
     html += '<li class="empty">「さがす」でスポットの「計画に追加」を押すと、ここに行程が並びます。</li>';
   }
   $('#stopList').innerHTML = html;
+  Object.keys(keep).forEach(f => { const el = $(`#ed-${f}-${state.editIndex}`); if (el) el.value = keep[f]; });
   state.scheduleText = schedule.join('\n');
 
   layerPlan.clearLayers();
@@ -530,7 +673,11 @@ function renderPlan() {
     line.unshift([+o.lat, +o.lng]);
     if (p.returnHome !== false && p.items.some(hasPos)) line.push([+o.lat, +o.lng]);
   }
-  p.items.filter(hasPos).forEach((x, i) => L.circleMarker([+x.lat, +x.lng], PIN).bindTooltip(`${i + 1}. ${x.name}`).addTo(layerPlan));
+  p.items.forEach((x, i) => {
+    if (!hasPos(x)) return;
+    const style = x.type === 'custom' ? Object.assign({}, PIN, { fillColor: '#5B8C5A', radius: 6 }) : PIN;
+    L.circleMarker([+x.lat, +x.lng], style).bindTooltip(`${i + 1}. ${x.name}`).addTo(layerPlan);
+  });
   if (line.length > 1) L.polyline(line, { color: '#2B4F7A', weight: 4, dashArray: '6 6' }).addTo(layerPlan);
   if (line.length) mapPlan.fitBounds(line, { padding: [30, 30], maxZoom: 13 });
 }
@@ -542,10 +689,51 @@ function setupPlan() {
   $('#stopList').addEventListener('click', e => {
     const b = e.target.closest('button'); if (!b) return;
     const items = state.plan.items, d = b.dataset;
-    if (d.up) { const i = +d.up; [items[i - 1], items[i]] = [items[i], items[i - 1]]; }
-    else if (d.down) { const i = +d.down; [items[i + 1], items[i]] = [items[i], items[i + 1]]; }
-    else if (d.rm) items.splice(+d.rm, 1);
+    if (d.up) { const i = +d.up; [items[i - 1], items[i]] = [items[i], items[i - 1]]; state.editIndex = null; }
+    else if (d.down) { const i = +d.down; [items[i + 1], items[i]] = [items[i], items[i + 1]]; state.editIndex = null; }
+    else if (d.rm) {
+      const it = items[+d.rm];
+      if (it.type === 'custom' && !confirm(`立ち寄り「${it.name}」を削除しますか？`)) return;
+      items.splice(+d.rm, 1); state.editIndex = null;
+    }
     else if (d.gd) return openGuide(d.gd);
+    else if (d.edit) { state.editIndex = state.editIndex === +d.edit ? null : +d.edit; state.editPlace = null; }
+    else if (d.edcancel) { state.editIndex = null; state.editPlace = null; }
+    else if (d.edclear) { const it = items[+d.edclear]; it.place = ''; it.lat = ''; it.lng = ''; }
+    else if (d.edsearch) {
+      const k = +d.edsearch, q = $('#ed-place-' + k).value.trim();
+      if (!q) { toast('場所を入れてください'); return; }
+      busy(b, true, '検索中…');
+      placeSearch(q).then(list => {
+        busy(b, false);
+        state.editCands = list;
+        $('#ed-cands-' + k).innerHTML = list.length
+          ? list.map((c, i) => `<li><button type="button" data-edpick="${k}" data-i="${i}">${esc(c.name)}</button></li>`).join('')
+          : '<li class="hint">見つかりませんでした。店名と市町村名を一緒に入れてみてください。</li>';
+      }).catch(ex => { busy(b, false); toast(ex.message, 4000); });
+      return;
+    }
+    else if (d.edpick) {
+      const c = state.editCands[+d.i];
+      state.editPlace = { place: c.name, lat: c.lat, lng: c.lng };
+      $('#ed-place-' + d.edpick).value = c.name;
+      $('#ed-cands-' + d.edpick).innerHTML = `<li class="hint">「変更を保存」で場所が確定します</li>`;
+      return;
+    }
+    else if (d.edsave) {
+      const k = +d.edsave, it = items[k];
+      if (it.type === 'custom') {
+        const nm = $('#ed-name-' + k).value.trim();
+        if (!nm) { toast('名前を入れてください'); return; }
+        it.name = nm;
+        if (state.editPlace) Object.assign(it, state.editPlace);
+      }
+      it.stay = Math.max(0, Math.min(1440, +$('#ed-stay-' + k).value || 0));
+      it.note = $('#ed-note-' + k).value.trim().slice(0, 200);
+      state.editIndex = null; state.editPlace = null;
+      toast('変更を保存しました（計画の保存は「計画を保存」で）');
+    }
+    else return;
     saveDraft(); renderPlan();
   });
   $('#stopList').addEventListener('change', e => {
@@ -588,10 +776,56 @@ function setupPlan() {
   };
   $('#returnHome').onchange = e => { state.plan.returnHome = e.target.checked; saveDraft(); renderPlan(); };
 
+  // よく使う立ち寄り
+  $$('[data-preset]').forEach(b => b.onclick = () => {
+    const [nm, min] = b.dataset.preset.split('|');
+    $('#customStop').value = nm; $('#customStay').value = min; $('#customStop').focus();
+  });
+  // 立ち寄りの場所検索
+  state.customPlace = null;
+  $('#btnCustomPlace').onclick = async e => {
+    const q = $('#customPlace').value.trim();
+    if (!q) { toast('場所を入れてください'); return; }
+    busy(e.target, true, '検索中…');
+    try {
+      const list = await placeSearch(q);
+      state.customCands = list;
+      $('#customCands').innerHTML = list.length
+        ? list.map((c, i) => `<li><button type="button" data-ccand="${i}">${esc(c.name)}</button></li>`).join('')
+        : '<li class="hint">見つかりませんでした。店名と市町村名を一緒に入れてみてください。</li>';
+    } catch (ex) { toast(ex.message, 4000); }
+    busy(e.target, false);
+  };
+  $('#customPlace').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); $('#btnCustomPlace').click(); } });
+  $('#customPlace').addEventListener('input', () => { state.customPlace = null; $('#customPlaceSet').textContent = ''; });
+  $('#customCands').addEventListener('click', e => {
+    const b = e.target.closest('[data-ccand]'); if (!b) return;
+    const c = state.customCands[+b.dataset.ccand];
+    state.customPlace = { place: c.name, lat: c.lat, lng: c.lng };
+    $('#customCands').innerHTML = '';
+    $('#customPlaceSet').innerHTML = `場所：<strong>${esc(c.name)}</strong>`;
+  });
   $('#btnAddCustom').onclick = () => {
-    const v = $('#customStop').value.trim(); if (!v) return;
-    state.plan.items.push({ type: 'custom', name: v, stay: 30, note: '' });
-    $('#customStop').value = ''; saveDraft(); renderPlan();
+    const v = $('#customStop').value.trim();
+    if (!v) { toast('立ち寄りの名前を入れてください'); $('#customStop').focus(); return; }
+    if ($('#customPlace').value.trim() && !state.customPlace) {
+      if (!confirm('場所がまだ確定していません（「検索」で候補を選ぶと移動時間も計算できます）。場所なしで追加しますか？')) return;
+    }
+    const item = {
+      type: 'custom', name: v.slice(0, 60),
+      stay: Math.max(0, Math.min(1440, +$('#customStay').value || 0)),
+      note: $('#customNote').value.trim().slice(0, 200),
+      place: '', lat: '', lng: ''
+    };
+    if (state.customPlace) Object.assign(item, state.customPlace);
+    const pos = $('#customPos').value;
+    const items = state.plan.items;
+    if (pos === 'end') items.push(item); else items.splice(Math.min(+pos, items.length), 0, item);
+    ['#customStop', '#customPlace', '#customNote'].forEach(id => $(id).value = '');
+    $('#customStay').value = 30; $('#customCands').innerHTML = ''; $('#customPlaceSet').textContent = '';
+    state.customPlace = null; state.editIndex = null;
+    saveDraft(); renderPlan();
+    toast(`「${item.name}」を行程に追加しました`);
   };
   $('#btnNewPlan').onclick = () => {
     if (state.plan.items.length && !confirm('いまの計画を閉じて、新しい計画を始めますか？（保存していない変更は消えます）')) return;
@@ -623,6 +857,13 @@ function setupPlan() {
       `&destination=${encodeURIComponent(ll(transitDest))}` +
       (way && mode !== 'transit' ? `&waypoints=${encodeURIComponent(way)}` : '') + `&travelmode=${mode}`;
     window.open(url, '_blank', 'noopener');
+  };
+  $('#btnReroute').onclick = () => {
+    const pts = routePoints();
+    if (pts.filter(hasPos).length < 2 && !pts.some(x => !x.custom && !hasPos(x))) { toast('出発地とスポットを入れてください'); return; }
+    state.plan.route = null; state.routeFail = '';
+    scheduleRoute(routeSig(pts), pts, true);
+    renderPlan();
   };
   $('#btnAdvice').onclick = async e => {
     if (!state.plan.items.length) { toast('行程を1つ以上入れてください'); return; }
@@ -687,6 +928,7 @@ function openGuide(spotId) {
   $('#btnPlay').disabled = true; $('#playStatus').textContent = '';
   const local = LS.get('guide_' + s.spotId, null);
   if (local) { state.guideData = local; renderGuide(local); $('#btnPlay').disabled = false; }
+  loadSpotMemories(s.spotId);
   showView('guide');
 }
 
@@ -796,6 +1038,274 @@ function setupGuide() {
 }
 
 /* =========================================================
+   想い出の記録（写真・動画・URL）
+   ========================================================= */
+const driveThumb = (id, w = 600) => `https://drive.google.com/thumbnail?id=${encodeURIComponent(id)}&sz=w${w}`;
+const driveView = id => `https://drive.google.com/file/d/${encodeURIComponent(id)}/view`;
+const drivePreview = id => `https://drive.google.com/file/d/${encodeURIComponent(id)}/preview`;
+function youtubeId(url) {
+  const m = String(url).match(/(?:youtube\.com\/(?:watch\?v=|shorts\/|embed\/|live\/)|youtu\.be\/)([\w-]{11})/);
+  return m ? m[1] : '';
+}
+function fmtDate(d) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(d || ''); return m ? `${+m[1]}年${+m[2]}月${+m[3]}日` : '';
+}
+
+/* --- 写真の縮小とアップロード（3MBずつ分割して送る） --- */
+async function shrinkImage(file) {
+  const max = (C.MEMORY && C.MEMORY.maxPhotoPx) || 1920;
+  let src;
+  try { src = await createImageBitmap(file, { imageOrientation: 'from-image' }); }
+  catch {
+    src = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = URL.createObjectURL(file); });
+  }
+  const w0 = src.width, h0 = src.height, r = Math.min(1, max / Math.max(w0, h0));
+  const cv = document.createElement('canvas'); cv.width = Math.round(w0 * r); cv.height = Math.round(h0 * r);
+  cv.getContext('2d').drawImage(src, 0, 0, cv.width, cv.height);
+  return await new Promise(res => cv.toBlob(b => res(b || file), 'image/jpeg', 0.85));
+}
+function blobToBase64(blob) {
+  return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(',')[1] || ''); r.onerror = rej; r.readAsDataURL(blob); });
+}
+async function uploadMedia(file, onProgress) {
+  let blob = file, mime = file.type || '', name = file.name || 'file';
+  const isVideo = mime.startsWith('video/');
+  if (!isVideo && !mime.startsWith('image/')) throw new Error(`「${name}」は写真・動画ではありません`);
+  if (!isVideo && mime !== 'image/gif') { blob = await shrinkImage(file); mime = 'image/jpeg'; name = name.replace(/\.\w+$/, '') + '.jpg'; }
+  const maxMB = (C.MEMORY && C.MEMORY.maxVideoMB) || 100;
+  if (blob.size > maxMB * 1048576) throw new Error(`「${name}」は${maxMB}MBを超えています。YouTubeなどに上げてURLで登録してください`);
+  const st = await api('startUpload', { name, mime, size: blob.size }, { auth: true });
+  let off = 0, res = null;
+  while (off < blob.size) {
+    const part = blob.slice(off, off + st.chunk);
+    res = await api('uploadChunk', { uploadId: st.uploadId, offset: off, data: await blobToBase64(part) }, { auth: true });
+    off += part.size;
+    onProgress(off / blob.size);
+  }
+  if (!res || !res.fileId) throw new Error('アップロードが完了しませんでした');
+  return { type: isVideo ? 'video' : 'photo', fileId: res.fileId, name, mime };
+}
+
+/* --- 一覧 --- */
+state.memScope = 'mine';
+state.memories = [];
+function memThumb(m) {
+  const ph = (m.media || []).find(x => x.type === 'photo') || (m.media || []).find(x => x.type === 'video');
+  if (ph) return `<img src="${driveThumb(ph.fileId, 500)}" alt="" loading="lazy" onerror="this.replaceWith(document.createTextNode('${ph.type === 'video' ? '🎬' : '🖼'}'))">`;
+  const u = (m.media || []).find(x => x.type === 'url');
+  if (u && youtubeId(u.url)) return `<img src="https://i.ytimg.com/vi/${youtubeId(u.url)}/hqdefault.jpg" alt="" loading="lazy">`;
+  if (u && u.image) return `<img src="${esc(u.image)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">`;
+  return '📝';
+}
+function memCard(m, showWho) {
+  const n = { photo: 0, video: 0, url: 0 }; (m.media || []).forEach(x => n[x.type]++);
+  const counts = [n.photo && `📷${n.photo}`, n.video && `🎬${n.video}`, n.url && `🔗${n.url}`].filter(Boolean).join(' ');
+  return `<li><button class="memcard" type="button" data-mem="${esc(m.memoryId)}">
+    <div class="ph">${memThumb(m)}</div>
+    <div class="tx"><h3>${esc(m.title)}</h3>
+      <div class="meta">${esc(fmtDate(m.date))}${m.spotName ? '　📍' + esc(m.spotName) : ''}</div>
+      <div class="meta">${counts}${showWho ? `　${esc(m.nickname)} さん` : ''}${m.visibility === 'members' ? '　会員に公開' : ''}</div>
+    </div></button></li>`;
+}
+async function loadMemories() {
+  const ul = $('#memList');
+  if (!state.user) { ul.innerHTML = '<li class="empty">想い出の記録にはログインが必要です。<button class="btn small primary" type="button" data-login>ログイン・新規登録</button></li>'; return; }
+  ul.innerHTML = '<li class="empty">読み込み中…</li>';
+  try {
+    const r = await api('listMemories', { scope: state.memScope }, { auth: true });
+    state.memories = r.memories;
+    ul.innerHTML = r.memories.length ? r.memories.map(m => memCard(m, state.memScope === 'all')).join('')
+      : `<li class="empty">${state.memScope === 'mine' ? 'まだ想い出がありません。「＋ 想い出を記録」から写真や動画を残しましょう。' : '会員に公開された想い出はまだありません。'}</li>`;
+  } catch (e) { ul.innerHTML = `<li class="empty">${esc(e.message)}</li>`; }
+}
+async function loadSpotMemories(spotId) {
+  const box = $('#guideMemList');
+  if (!state.user) { box.innerHTML = '<p class="hint">ログインすると、この場所の想い出を見たり記録したりできます。</p>'; return; }
+  box.innerHTML = '<p class="hint">読み込み中…</p>';
+  try {
+    const r = await api('listMemories', { spotId }, { auth: true });
+    state.spotMemories = r.memories;
+    box.innerHTML = r.memories.length ? r.memories.map(m => memCard(m, true).replace(/^<li>|<\/li>$/g, '')).join('')
+      : '<p class="hint">まだこの場所の想い出はありません。</p>';
+  } catch (e) { box.innerHTML = `<p class="hint">${esc(e.message)}</p>`; }
+}
+
+/* --- 表示 --- */
+const findMemory = id => state.memories.find(x => x.memoryId === id) || (state.spotMemories || []).find(x => x.memoryId === id);
+function openMemoryView(id) {
+  const m = findMemory(id); if (!m) return;
+  const photos = m.media.filter(x => x.type === 'photo');
+  const videos = m.media.filter(x => x.type === 'video');
+  const urls = m.media.filter(x => x.type === 'url');
+  const yt = urls.filter(u => youtubeId(u.url));
+  $('#memView').innerHTML = `
+    <h2 id="memViewTitle">${esc(m.title)}</h2>
+    <p class="mv-meta">${esc(fmtDate(m.date))}${m.spotName ? '　📍' + esc(m.spotName) : ''}${m.planTitle ? '　🗓 ' + esc(m.planTitle) : ''}　${esc(m.nickname)} さん　${m.visibility === 'members' ? '会員に公開' : '自分だけ'}</p>
+    ${m.text ? `<p class="mv-text">${esc(m.text)}</p>` : ''}
+    ${photos.length ? `<div class="mv-photos">${photos.map(p => `<a href="${driveView(p.fileId)}" target="_blank" rel="noopener" aria-label="写真を大きく見る"><img src="${driveThumb(p.fileId, 900)}" alt="${esc(p.name)}" loading="lazy"></a>`).join('')}</div>` : ''}
+    ${videos.map(v => `<div class="mv-video"><iframe class="video" src="${drivePreview(v.fileId)}" allow="autoplay; fullscreen" allowfullscreen title="${esc(v.name)}"></iframe>
+      <p class="hint">アップロード直後は、Googleドライブ側の準備ができるまで再生できないことがあります。</p></div>`).join('')}
+    ${yt.map(u => `<div class="mv-video"><iframe class="video" src="https://www.youtube-nocookie.com/embed/${youtubeId(u.url)}" allow="fullscreen; picture-in-picture" allowfullscreen title="${esc(u.title || 'YouTube動画')}"></iframe></div>`).join('')}
+    ${urls.length ? `<ul class="mv-urls">${urls.map(u => `<li><a href="${esc(u.url)}" target="_blank" rel="noopener">
+        ${u.image ? `<img src="${esc(u.image)}" alt="" referrerpolicy="no-referrer" onerror="this.remove()">` : '<span aria-hidden="true">🔗</span>'}
+        <span>${esc(u.title || u.url)}<small>${esc((u.url.match(/^https?:\/\/([^\/]+)/i) || [])[1] || '')}</small></span></a></li>`).join('')}</ul>` : ''}
+    <div class="actions">
+      ${m.spotId ? `<button class="btn" type="button" data-mvguide="${esc(m.spotId)}">この場所の案内を見る</button>` : ''}
+      ${m.lat && m.lng ? `<a class="btn" href="https://www.google.com/maps/search/?api=1&query=${m.lat},${m.lng}" target="_blank" rel="noopener">地図で見る</a>` : ''}
+      ${m.mine ? `<button class="btn" type="button" data-mvedit="${esc(m.memoryId)}">編集</button>` : ''}
+    </div>`;
+  const d = $('#dlgMemoryView'); if (!d.open) d.showModal();
+}
+
+/* --- 記録・編集 --- */
+function openMemoryForm(m, preset = {}) {
+  if (!state.user) { openAuth('login'); return; }
+  const e = m || {};
+  state.memEdit = { memoryId: e.memoryId || '', media: (e.media || []).slice(), pending: [], lat: e.lat || preset.lat || '', lng: e.lng || preset.lng || '' };
+  $('#memTitle').textContent = m ? '想い出を編集' : '想い出を記録';
+  $('#memTitleIn').value = e.title || '';
+  $('#memDate').value = e.date || preset.date || new Date(Date.now() + 9 * 3600000).toISOString().slice(0, 10);
+  $('#memVis').value = e.visibility || 'private';
+  $('#memPlace').value = e.spotName || preset.spotName || '';
+  $('#memText').value = e.text || '';
+  $('#memUrl').value = ''; $('#memFiles').value = '';
+  $('#memPosInfo').textContent = state.memEdit.lat ? '位置を記録します' : '';
+  // 場所の候補：いまの計画の行程＋案内中のスポット＋百選すべて
+  const names = new Set();
+  state.plan.items.forEach(i => names.add(i.name));
+  if (state.guideSpot) names.add(state.guideSpot.name);
+  state.spots.forEach(s => names.add(s.name));
+  $('#memPlaceList').innerHTML = [...names].slice(0, 1500).map(n => `<option value="${esc(n)}"></option>`).join('');
+  $('#memPlan').innerHTML = '<option value="">ひも付けない</option>' +
+    state.plans.map(p => `<option value="${esc(p.planId)}" ${p.planId === (e.planId || preset.planId) ? 'selected' : ''}>${esc(p.title)}${p.date ? '（' + esc(p.date) + '）' : ''}</option>`).join('');
+  $('#btnMemDelete').hidden = !m;
+  $('#memProgress').hidden = true;
+  $('[data-err]', $('#dlgMemory')).textContent = '';
+  renderMemMedia();
+  const d = $('#dlgMemory'); if (!d.open) d.showModal();
+}
+function renderMemMedia() {
+  const me = state.memEdit;
+  const saved = me.media.map((x, i) => {
+    if (x.type === 'url') {
+      const yt = youtubeId(x.url);
+      return `<li>${yt ? `<img src="https://i.ytimg.com/vi/${yt}/default.jpg" alt="">` : ''}<span class="urlbox">🔗 ${esc(x.title || x.url)}</span>
+        <button class="rm" type="button" data-rmsaved="${i}" aria-label="このURLを外す">×</button></li>`;
+    }
+    return `<li><img src="${driveThumb(x.fileId, 300)}" alt="" onerror="this.remove()">${x.type === 'video' ? '<span class="badge">動画</span>' : ''}
+      <button class="rm" type="button" data-rmsaved="${i}" aria-label="${x.type === 'video' ? '動画' : '写真'}を外す">×</button></li>`;
+  });
+  const pend = me.pending.map((p, i) => `<li>${p.file.type.startsWith('video/') ? `<video src="${p.url}" muted></video><span class="badge">動画・未送信</span>` : `<img src="${p.url}" alt=""><span class="badge">未送信</span>`}
+      <button class="rm" type="button" data-rmpend="${i}" aria-label="外す">×</button></li>`);
+  $('#memMedia').innerHTML = saved.concat(pend).join('');
+}
+async function saveMemoryForm(ev) {
+  ev.preventDefault();
+  const me = state.memEdit, err = $('[data-err]', $('#dlgMemory')), btn = $('#btnMemSave');
+  const title = $('#memTitleIn').value.trim();
+  if (!title) { err.textContent = 'タイトルを入れてください'; return; }
+  err.textContent = ''; busy(btn, true, '保存中…');
+  try {
+    // 1) 写真・動画を順にアップロード
+    if (me.pending.length) {
+      const bar = $('#memProgress'); bar.hidden = false;
+      for (let i = 0; i < me.pending.length; i++) {
+        const p = me.pending[i];
+        const show = r => { $('span', bar).style.width = Math.round(r * 100) + '%'; $('em', bar).textContent = `${i + 1}/${me.pending.length}件目を送信中… ${Math.round(r * 100)}%`; };
+        show(0);
+        const media = await uploadMedia(p.file, show);
+        me.media.push(media);
+        URL.revokeObjectURL(p.url);
+      }
+      me.pending = []; bar.hidden = true; renderMemMedia();
+    }
+    // 2) 場所が百選と一致すればひも付け
+    const placeName = $('#memPlace').value.trim();
+    const spot = state.spots.find(s => s.name === placeName);
+    const plan = state.plans.find(p => p.planId === $('#memPlan').value);
+    const memory = {
+      memoryId: me.memoryId, title, date: $('#memDate').value, visibility: $('#memVis').value,
+      text: $('#memText').value.trim(), media: me.media,
+      spotId: spot ? spot.spotId : '', spotName: placeName,
+      planId: plan ? plan.planId : '', planTitle: plan ? plan.title : '',
+      lat: me.lat || (spot && spot.lat) || '', lng: me.lng || (spot && spot.lng) || ''
+    };
+    await api('saveMemory', { memory }, { auth: true });
+    $('#dlgMemory').close();
+    toast('想い出を保存しました');
+    loadMemories();
+    if (state.guideSpot) loadSpotMemories(state.guideSpot.spotId);
+  } catch (e) { err.textContent = e.message; }
+  busy(btn, false);
+}
+
+function setupMemories() {
+  $$('[data-mscope]').forEach(b => b.onclick = () => {
+    state.memScope = b.dataset.mscope;
+    $$('[data-mscope]').forEach(x => x.setAttribute('aria-selected', x === b));
+    loadMemories();
+  });
+  $('#btnNewMemory').onclick = () => openMemoryForm(null);
+  $('#btnGuideMemory').onclick = () => {
+    const s = state.guideSpot;
+    openMemoryForm(null, s ? { spotName: s.name, lat: s.lat, lng: s.lng } : {});
+  };
+  const openCard = e => { const b = e.target.closest('[data-mem]'); if (b) openMemoryView(b.dataset.mem); };
+  $('#memList').addEventListener('click', e => {
+    if (e.target.closest('[data-login]')) return openAuth('login');
+    openCard(e);
+  });
+  $('#guideMemList').addEventListener('click', openCard);
+  $('#memView').addEventListener('click', e => {
+    const b = e.target.closest('button'); if (!b) return;
+    if (b.dataset.mvedit) { $('#dlgMemoryView').close(); openMemoryForm(findMemory(b.dataset.mvedit)); }
+    if (b.dataset.mvguide) { $('#dlgMemoryView').close(); openGuide(b.dataset.mvguide); }
+  });
+  $('#memFiles').onchange = e => {
+    const files = [...e.target.files];
+    const max = (C.MEMORY && C.MEMORY.maxItems) || 20;
+    const room = max - state.memEdit.media.length - state.memEdit.pending.length;
+    if (files.length > room) toast(`1つの想い出に登録できるのは${max}件までです`);
+    files.slice(0, Math.max(0, room)).forEach(f => state.memEdit.pending.push({ file: f, url: URL.createObjectURL(f) }));
+    e.target.value = ''; renderMemMedia();
+  };
+  $('#btnMemUrl').onclick = async e => {
+    const url = $('#memUrl').value.trim();
+    if (!/^https?:\/\/\S+$/i.test(url)) { toast('http:// か https:// で始まるURLを入れてください'); return; }
+    busy(e.target, true, '確認中…');
+    let info = {};
+    try { info = await api('urlInfo', { url }, { auth: true }); } catch {}
+    state.memEdit.media.push({ type: 'url', url, title: info.title || '', image: info.image || '' });
+    $('#memUrl').value = ''; busy(e.target, false); renderMemMedia();
+  };
+  $('#memUrl').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); $('#btnMemUrl').click(); } });
+  $('#memMedia').addEventListener('click', e => {
+    const b = e.target.closest('button'); if (!b) return;
+    if (b.dataset.rmsaved !== undefined) state.memEdit.media.splice(+b.dataset.rmsaved, 1);
+    if (b.dataset.rmpend !== undefined) { const p = state.memEdit.pending.splice(+b.dataset.rmpend, 1)[0]; if (p) URL.revokeObjectURL(p.url); }
+    renderMemMedia();
+  });
+  $('#btnMemHere').onclick = () => {
+    if (!navigator.geolocation) { toast('この端末では現在地を取得できません'); return; }
+    $('#memPosInfo').textContent = '現在地を取得中…';
+    navigator.geolocation.getCurrentPosition(p => {
+      state.memEdit.lat = Math.round(p.coords.latitude * 1e5) / 1e5; state.memEdit.lng = Math.round(p.coords.longitude * 1e5) / 1e5;
+      $('#memPosInfo').textContent = '現在地を記録します';
+    }, () => { $('#memPosInfo').textContent = '現在地を取得できませんでした'; }, { enableHighAccuracy: true, timeout: 15000 });
+  };
+  $('#formMemory').onsubmit = saveMemoryForm;
+  $('#btnMemDelete').onclick = async () => {
+    const id = state.memEdit.memoryId; if (!id) return;
+    if (!confirm('この想い出を削除しますか？写真・動画もゴミ箱に移ります。')) return;
+    try {
+      await api('deleteMemory', { memoryId: id }, { auth: true });
+      $('#dlgMemory').close(); toast('削除しました'); loadMemories();
+      if (state.guideSpot) loadSpotMemories(state.guideSpot.spotId);
+    } catch (e) { toast(e.message, 4000); }
+  };
+}
+
+/* =========================================================
    画面切り替え・ヘルプ・起動
    ========================================================= */
 function showView(name) {
@@ -803,6 +1313,7 @@ function showView(name) {
   $$('.tabs button').forEach(b => b.setAttribute('aria-selected', b.dataset.view === name));
   if (name !== 'guide') { /* ガイド音声は他画面でも継続再生 */ }
   setTimeout(() => { mapSearch.invalidateSize(); mapPlan.invalidateSize(); if (name === 'plan') renderPlan(); }, 50);
+  if (name === 'memory') loadMemories();
   window.scrollTo({ top: 0 });
 }
 
@@ -828,7 +1339,7 @@ async function checkSession() {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
-  setupCommon(); initMaps(); setupMics(); setupAuth(); setupSearch(); setupPlan(); setupMine(); setupGuide();
+  setupCommon(); initMaps(); setupMics(); setupAuth(); setupSearch(); setupPlan(); setupMine(); setupGuide(); setupMemories();
   renderAccount(); renderPlan(); renderPlanList();
   loadMaster(); checkSession();
 });

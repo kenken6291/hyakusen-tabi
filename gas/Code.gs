@@ -18,8 +18,9 @@ const HEADERS = {
   Users:      ['userId','email','nickname','salt','hash','isFirstLogin','failCount','lockedUntil','createdAt','lastLoginAt','role'],
   Categories: ['categoryId','name','group','icon','sourceUrl','sort'],
   Spots:      ['spotId','category','name','pref','lat','lng','distanceKm','durationMin','difficulty','description','videoFileId','sourceUrl','sample','updatedAt','elevation','area','geoStatus','base','city'],
-  Plans:      ['planId','userId','title','date','start','mode','itemsJson','memo','createdAt','updatedAt','originJson','returnHome'],
-  Guides:     ['spotId','guideJson','model','createdAt']
+  Plans:      ['planId','userId','title','date','start','mode','itemsJson','memo','createdAt','updatedAt','originJson','returnHome','routeJson'],
+  Guides:     ['spotId','guideJson','model','createdAt'],
+  Memories:   ['memoryId','userId','nickname','spotId','spotName','planId','planTitle','title','date','text','mediaJson','visibility','lat','lng','createdAt','updatedAt']
 };
 
 /* ===================== ルーティング ===================== */
@@ -27,7 +28,8 @@ const ROUTES = {
   register, login, forgotPassword, changePassword, logout, me,
   getMaster, geocode, routeTimes,
   listPlans, savePlan, deletePlan,
-  generateGuide, tts, planAdvice
+  generateGuide, tts, planAdvice,
+  listMemories, saveMemory, deleteMemory, startUpload, uploadChunk, urlInfo
 };
 
 function doGet() {
@@ -340,8 +342,10 @@ function planOut_(p) {
   const fmt = v => v instanceof Date ? Utilities.formatDate(v, 'Asia/Tokyo', v.getFullYear() > 1900 ? 'yyyy-MM-dd' : 'HH:mm') : String(v || '');
   let origin = null;
   try { origin = p.originJson ? JSON.parse(p.originJson) : null; } catch (e) {}
+  let route = null;
+  try { route = p.routeJson ? JSON.parse(p.routeJson) : null; } catch (e) {}
   return { planId: p.planId, title: p.title, date: fmt(p.date), start: fmt(p.start) || '09:00', mode: p.mode || 'car', memo: p.memo, items,
-    origin, returnHome: p.returnHome === '' ? true : isTrue_(p.returnHome) };
+    origin, returnHome: p.returnHome === '' ? true : isTrue_(p.returnHome), route };
 }
 function savePlan(d, token) {
   const u = auth_(token);
@@ -351,14 +355,16 @@ function savePlan(d, token) {
   const items = (p.items || []).slice(0, 50).map(it => ({
     type: it.type === 'custom' ? 'custom' : 'spot', spotId: String(it.spotId || ''),
     name: String(it.name || '').slice(0, 60), lat: +it.lat || '', lng: +it.lng || '',
-    stay: Math.max(0, Math.min(1440, +it.stay || 0)), note: String(it.note || '').slice(0, 300)
+    stay: Math.max(0, Math.min(1440, +it.stay || 0)), note: String(it.note || '').slice(0, 300),
+    place: String(it.place || '').slice(0, 80)
   }));
   const rec = {
     title, date: "'" + String(p.date || ''), start: "'" + String(p.start || '09:00'),
     mode: ['car', 'walk', 'bike', 'transit'].indexOf(p.mode) >= 0 ? p.mode : 'car',
     itemsJson: JSON.stringify(items), memo: String(p.memo || '').slice(0, 3000), updatedAt: new Date(),
     originJson: p.origin && p.origin.name ? JSON.stringify({ name: String(p.origin.name).slice(0, 80), lat: +p.origin.lat || '', lng: +p.origin.lng || '' }) : '',
-    returnHome: p.returnHome !== false
+    returnHome: p.returnHome !== false,
+    routeJson: (() => { try { const j = p.route && p.route.legs ? JSON.stringify(p.route) : ''; return j.length < 45000 ? j : ''; } catch (e) { return ''; } })()
   };
   return withLock_(() => {
     if (p.planId) {
@@ -598,13 +604,15 @@ function geocodeOne_(name, pref) {
 }
 
 /** 2地点間の所要時間。Googleの経路検索 → だめなら車の時間から推定 → 直線距離から目安 */
-function directions_(from, to, mode, depart) {
+function directions_(from, to, mode, depart, fresh) {
   const r3 = v => Math.round(+v * 1000) / 1000;
-  const hour = Utilities.formatDate(depart, 'Asia/Tokyo', 'yyyyMMddHH');
-  const key = 'rt_' + md5_([mode, r3(from.lat), r3(from.lng), r3(to.lat), r3(to.lng), (mode === 'transit' || mode === 'car') ? hour : ''].join('|'));
+  const mm = +Utilities.formatDate(depart, 'Asia/Tokyo', 'mm');
+  const slot = Utilities.formatDate(depart, 'Asia/Tokyo', 'yyyyMMddHH') + Math.floor(mm / 10); // 10分単位
+  const key = 'rt2_' + md5_([mode, r3(from.lat), r3(from.lng), r3(to.lat), r3(to.lng), (mode === 'transit' || mode === 'car') ? slot : ''].join('|'));
   const cache = CacheService.getScriptCache();
-  const hit = cache.get(key);
+  const hit = fresh ? null : cache.get(key);
   if (hit) return JSON.parse(hit);
+  const strip = h => String(h || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80);
 
   const ask = m => {
     try {
@@ -615,13 +623,40 @@ function directions_(from, to, mode, depart) {
       const res = df.getDirections();
       if (res.status !== 'OK' || !res.routes.length) return null;
       const leg = res.routes[0].legs[0];
-      let summary = '';
+      const dur = (leg.duration_in_traffic || leg.duration).value;
+      const out = { minutes: Math.max(1, Math.round(dur / 60)), km: Math.round(leg.distance.value / 100) / 10, summary: '', steps: [] };
       if (m === 'transit') {
-        summary = (leg.steps || []).filter(s => s.travel_mode === 'TRANSIT')
-          .map(s => { const l = (s.transit_details || {}).line || {}; return l.short_name || l.name || ''; })
-          .filter(Boolean).join('→');
+        const lines = [];
+        (leg.steps || []).forEach(s => {
+          if (s.travel_mode === 'TRANSIT') {
+            const td = s.transit_details || {}, l = td.line || {};
+            const name = l.short_name || l.name || '';
+            lines.push(name);
+            out.steps.push({
+              type: 'transit', line: name, vehicle: (l.vehicle || {}).name || '', headsign: td.headsign || '',
+              from: (td.departure_stop || {}).name || '', to: (td.arrival_stop || {}).name || '',
+              dep: (td.departure_time || {}).text || '', arr: (td.arrival_time || {}).text || '',
+              stops: td.num_stops || 0, minutes: Math.round(s.duration.value / 60)
+            });
+          } else {
+            out.steps.push({ type: 'walk', minutes: Math.max(1, Math.round(s.duration.value / 60)), text: strip(s.html_instructions) });
+          }
+        });
+        out.summary = lines.filter(Boolean).join('→');
+        if (leg.departure_time && leg.arrival_time) {
+          out.departAt = leg.departure_time.value * 1000;
+          out.arriveAt = leg.arrival_time.value * 1000;
+          out.depText = leg.departure_time.text; out.arrText = leg.arrival_time.text;
+        }
+      } else {
+        out.summary = res.routes[0].summary || '';
+        // 主な区間（距離の長い順に4つを、通る順に）
+        const st = (leg.steps || []).map((s, i) => ({ i, km: s.distance.value / 1000, min: Math.round(s.duration.value / 60), text: strip(s.html_instructions) }));
+        out.steps = st.slice().sort((a, b) => b.km - a.km).slice(0, 4).sort((a, b) => a.i - b.i)
+          .filter(x => x.text && (x.km >= 0.3 || m === 'walk'))
+          .map(x => ({ type: m === 'car' ? 'drive' : m, minutes: Math.max(1, x.min), km: Math.round(x.km * 10) / 10, text: x.text }));
       }
-      return { minutes: Math.max(1, Math.round(leg.duration.value / 60)), km: Math.round(leg.distance.value / 100) / 10, summary };
+      return out;
     } catch (e) { console.warn(e); return null; }
   };
 
@@ -654,6 +689,7 @@ function directions_(from, to, mode, depart) {
  */
 function routeTimes(d) {
   const mode = ROUTE_MODES[d.mode] ? d.mode : 'car';
+  const fresh = !!d.fresh;
   const pts = (d.points || []).slice(0, 15).map(p => ({
     name: String(p.name || '').slice(0, 80), pref: String(p.pref || '').slice(0, 30),
     lat: +p.lat || 0, lng: +p.lng || 0, stay: Math.max(0, Math.min(1440, +p.stay || 0)), custom: !!p.custom
@@ -672,12 +708,187 @@ function routeTimes(d) {
     let leg;
     if (to.custom && !to.lat) leg = { minutes: 0, source: 'custom' };
     else if (!last || !to.lat) leg = { minutes: null, source: 'none' };
-    else leg = directions_(last, to, mode, new Date(t));
+    else {
+      leg = Object.assign({}, directions_(last, to, mode, new Date(t), fresh));
+      // 電車・バス：実際の発車時刻までの待ちを含めて、到着時刻から所要時間を出す
+      if (leg.arriveAt && leg.departAt >= t - 60000) {
+        leg.wait = Math.max(0, Math.round((leg.departAt - t) / 60000));
+        leg.minutes = Math.max(1, Math.round((leg.arriveAt - t) / 60000));
+      }
+      leg.from = [last.lat, last.lng]; leg.to = [to.lat, to.lng];
+    }
     legs.push(leg);
     t += ((leg.minutes || 0) + to.stay) * 60000;
     if (to.lat) last = to;
   }
   return { legs, points: pts.map(p => p.lat ? { lat: p.lat, lng: p.lng, geocoded: !!p.geocoded } : null) };
+}
+
+/* ===================== 想い出の記録 ===================== */
+/** 写真・動画の保存先フォルダ（無ければ作成してIDを保存） */
+function memFolder_() {
+  const p = PropertiesService.getScriptProperties();
+  const id = p.getProperty('MEMORY_FOLDER_ID');
+  if (id) { try { return DriveApp.getFolderById(id); } catch (e) {} }
+  const parentId = p.getProperty('DRIVE_FOLDER_ID');
+  const parent = parentId ? DriveApp.getFolderById(parentId) : DriveApp.getRootFolder();
+  const f = parent.createFolder('hyakusen-tabi-memories');
+  p.setProperty('MEMORY_FOLDER_ID', f.getId());
+  return f;
+}
+const MAX_UPLOAD_MB = 100;
+const CHUNK = 3 * 1024 * 1024; // 256KBの倍数（Driveの再開可能アップロードの決まり）
+
+/** アップロード開始：Driveの再開可能アップロードの窓口を作る */
+function startUpload(d, token) {
+  const u = auth_(token);
+  const mime = String(d.mime || '');
+  if (!/^(image|video)\//.test(mime)) throw appErr_('写真か動画のファイルを選んでください');
+  const size = +d.size || 0;
+  if (size <= 0 || size > MAX_UPLOAD_MB * 1048576) throw appErr_(`1ファイル${MAX_UPLOAD_MB}MBまでです。長い動画はYouTubeなどに上げてURLで登録してください`);
+  const name = `${Utilities.formatDate(new Date(), 'Asia/Tokyo', 'yyyyMMdd_HHmmss')}_${u.userId}_${String(d.name || 'file').replace(/[\\/:*?"<>|]/g, '_').slice(0, 60)}`;
+  const res = UrlFetchApp.fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id', {
+    method: 'post', contentType: 'application/json; charset=UTF-8', muteHttpExceptions: true,
+    headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken(), 'X-Upload-Content-Type': mime, 'X-Upload-Content-Length': String(size) },
+    payload: JSON.stringify({ name, mimeType: mime, parents: [memFolder_().getId()] })
+  });
+  const h = res.getAllHeaders();
+  const loc = h.Location || h.location;
+  if (res.getResponseCode() !== 200 || !loc) throw appErr_('アップロードを開始できませんでした（' + res.getResponseCode() + '）');
+  const uploadId = Utilities.getUuid().replace(/-/g, '');
+  CacheService.getScriptCache().put('up_' + uploadId, JSON.stringify({ loc, userId: u.userId, size, mime }), 21600);
+  return { uploadId, chunk: CHUNK };
+}
+
+/** 分割した一部を送る。最後の一部で完成したファイルIDを返す */
+function uploadChunk(d, token) {
+  const u = auth_(token);
+  const cache = CacheService.getScriptCache();
+  const raw = cache.get('up_' + String(d.uploadId || ''));
+  if (!raw) throw appErr_('アップロードの有効期限が切れました。もう一度お試しください');
+  const up = JSON.parse(raw);
+  if (up.userId !== u.userId) throw appErr_('アップロードできません');
+  const bytes = Utilities.base64Decode(String(d.data || ''));
+  const off = +d.offset || 0;
+  const end = off + bytes.length - 1;
+  const res = UrlFetchApp.fetch(up.loc, {
+    method: 'put', contentType: up.mime, payload: bytes, muteHttpExceptions: true,
+    headers: { 'Content-Range': `bytes ${off}-${end}/${up.size}` }
+  });
+  const code = res.getResponseCode();
+  if (code === 308) return { done: false, received: end + 1 };
+  if (code !== 200 && code !== 201) throw appErr_('アップロードに失敗しました（' + code + '）');
+  const fileId = JSON.parse(res.getContentText()).id;
+  const file = DriveApp.getFileById(fileId);
+  file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW); // 画面に表示するため
+  cache.put('own_' + fileId, u.userId, 21600);
+  cache.remove('up_' + d.uploadId);
+  return { done: true, fileId };
+}
+
+/** URLのページ名と画像（一覧の見た目用） */
+function urlInfo(d, token) {
+  auth_(token);
+  const url = String(d.url || '').trim();
+  if (!/^https?:\/\/[^\s]+$/i.test(url)) throw appErr_('http:// か https:// で始まるURLを入れてください');
+  const cache = CacheService.getScriptCache();
+  const key = 'url_' + md5_(url);
+  const hit = cache.get(key);
+  if (hit) return JSON.parse(hit);
+  const out = { title: '', image: '', site: (url.match(/^https?:\/\/([^\/]+)/i) || [])[1] || '' };
+  try {
+    const res = UrlFetchApp.fetch(url, { muteHttpExceptions: true, followRedirects: true, headers: { 'User-Agent': 'Mozilla/5.0 (hyakusen-tabi)' } });
+    if (res.getResponseCode() < 400) {
+      const html = res.getContentText().slice(0, 300000);
+      const meta = p => { const m = html.match(new RegExp(`<meta[^>]+(?:property|name)=["']${p}["'][^>]*content=["']([^"']+)`, 'i')) || html.match(new RegExp(`<meta[^>]+content=["']([^"']+)["'][^>]*(?:property|name)=["']${p}["']`, 'i')); return m ? m[1] : ''; };
+      const dec = s => String(s).replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').trim();
+      out.title = dec(meta('og:title') || ((html.match(/<title[^>]*>([^<]*)<\/title>/i) || [])[1] || '')).slice(0, 120);
+      const img = meta('og:image');
+      if (/^https:\/\//i.test(img)) out.image = dec(img).slice(0, 500);
+    }
+  } catch (e) { console.warn(e); }
+  cache.put(key, JSON.stringify(out), 21600);
+  return out;
+}
+
+function memOut_(m, me) {
+  let media = [];
+  try { media = JSON.parse(m.mediaJson || '[]'); } catch (e) {}
+  const fmt = v => v instanceof Date ? Utilities.formatDate(v, 'Asia/Tokyo', 'yyyy-MM-dd') : String(v || '').replace(/^'/, '');
+  return {
+    memoryId: m.memoryId, nickname: m.nickname, mine: m.userId === me, spotId: String(m.spotId || ''), spotName: m.spotName,
+    planId: m.planId, planTitle: m.planTitle, title: m.title, date: fmt(m.date), text: m.text, media,
+    visibility: m.visibility || 'private', lat: +m.lat || '', lng: +m.lng || ''
+  };
+}
+
+/** scope: mine（自分）／all（自分＋会員公開）。spotId を渡すとその場所の想い出 */
+function listMemories(d, token) {
+  const u = auth_(token);
+  const list = rows_('Memories').filter(m => {
+    const visible = m.userId === u.userId || m.visibility === 'members';
+    if (!visible) return false;
+    if (d.spotId) return String(m.spotId) === String(d.spotId);
+    return d.scope === 'all' ? true : m.userId === u.userId;
+  }).sort((a, b) => String(memOut_(b).date).localeCompare(String(memOut_(a).date)) || new Date(b.updatedAt) - new Date(a.updatedAt))
+    .slice(0, 300).map(m => memOut_(m, u.userId));
+  return { memories: list };
+}
+
+function saveMemory(d, token) {
+  const u = auth_(token);
+  const m = d.memory || {};
+  const title = String(m.title || '').trim().slice(0, 80);
+  if (!title) throw appErr_('タイトルを入れてください');
+  const cache = CacheService.getScriptCache();
+  const media = (m.media || []).slice(0, 30).map(x => {
+    if (x.type === 'url') {
+      const url = String(x.url || '').trim();
+      if (!/^https?:\/\/[^\s]+$/i.test(url)) return null;
+      return { type: 'url', url: url.slice(0, 1000), title: String(x.title || '').slice(0, 120), image: /^https:\/\//i.test(x.image || '') ? String(x.image).slice(0, 500) : '' };
+    }
+    if ((x.type === 'photo' || x.type === 'video') && /^[\w-]{10,}$/.test(x.fileId || '')) {
+      return { type: x.type, fileId: x.fileId, name: String(x.name || '').slice(0, 80), mime: String(x.mime || '').slice(0, 60) };
+    }
+    return null;
+  }).filter(Boolean);
+
+  return withLock_(() => {
+    const rows = rows_('Memories');
+    const cur = m.memoryId ? rows.find(r => r.memoryId === m.memoryId) : null;
+    if (m.memoryId && (!cur || cur.userId !== u.userId)) throw appErr_('この想い出は編集できません');
+    let oldMedia = [];
+    try { oldMedia = cur ? JSON.parse(cur.mediaJson || '[]') : []; } catch (e) {}
+    const oldIds = oldMedia.filter(x => x.fileId).map(x => x.fileId);
+    // 新しく付けたファイルは本人がアップロードしたものに限る
+    media.forEach(x => { if (x.fileId && oldIds.indexOf(x.fileId) < 0 && cache.get('own_' + x.fileId) !== u.userId) throw appErr_('登録できないファイルが含まれています'); });
+    // 外したファイルはゴミ箱へ
+    oldIds.filter(id => !media.some(x => x.fileId === id)).forEach(id => { try { DriveApp.getFileById(id).setTrashed(true); } catch (e) {} });
+
+    const rec = {
+      nickname: u.nickname, spotId: String(m.spotId || '').slice(0, 20), spotName: String(m.spotName || '').slice(0, 80),
+      planId: String(m.planId || '').slice(0, 20), planTitle: String(m.planTitle || '').slice(0, 60),
+      title, date: "'" + (/^\d{4}-\d{2}-\d{2}$/.test(m.date || '') ? m.date : Utilities.formatDate(new Date(), 'Asia/Tokyo', 'yyyy-MM-dd')),
+      text: String(m.text || '').slice(0, 5000), mediaJson: JSON.stringify(media),
+      visibility: m.visibility === 'members' ? 'members' : 'private',
+      lat: +m.lat || '', lng: +m.lng || '', updatedAt: new Date()
+    };
+    if (cur) { update_('Memories', cur._row, rec); return { memoryId: cur.memoryId }; }
+    const memoryId = 'M' + Utilities.getUuid().slice(0, 12);
+    append_('Memories', Object.assign({ memoryId, userId: u.userId, createdAt: new Date() }, rec));
+    return { memoryId };
+  });
+}
+
+function deleteMemory(d, token) {
+  const u = auth_(token);
+  return withLock_(() => {
+    const cur = rows_('Memories').find(r => r.memoryId === d.memoryId);
+    if (!cur || cur.userId !== u.userId) throw appErr_('この想い出は削除できません');
+    try { JSON.parse(cur.mediaJson || '[]').filter(x => x.fileId).forEach(x => { try { DriveApp.getFileById(x.fileId).setTrashed(true); } catch (e) {} }); } catch (e) {}
+    sheet_('Memories').deleteRow(cur._row);
+    return {};
+  });
 }
 
 /* ===================== 計画へのAIアドバイス ===================== */

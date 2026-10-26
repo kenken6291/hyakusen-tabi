@@ -4,7 +4,7 @@
  */
 window.APP_CONFIG = {
   APP_NAME: '百選たびノート',
-  VERSION: 'v1.5.0',
+  VERSION: 'v1.9.0',
 
   // GAS ウェブアプリURL（デプロイ → ウェブアプリ のURLを貼り付け）
   GAS_URL: 'https://script.google.com/macros/s/AKfycbyzpfG7EDzgsoAquJeibBlrv6XUaJryiCCFszYn4EXfsBlWiYbywCPPOPrk4OsUmw2b8A/exec',
@@ -30,6 +30,13 @@ window.APP_CONFIG = {
     walkKmh: 3.5,         // 移動時間の目安計算用
     bikeKmh: 15,
     carKmh: 40
+  },
+
+  // 想い出の記録
+  MEMORY: {
+    maxPhotoPx: 1920,     // 写真はこの長辺まで縮小して保存
+    maxVideoMB: 100,      // 動画1本の上限（GAS側の MAX_UPLOAD_MB と合わせる）
+    maxItems: 20          // 1つの想い出に付けられる写真・動画・URLの数
   },
 
   SOURCE_URL: 'https://j100s.com/100.html'
