@@ -17,7 +17,7 @@ const HASH_ROUNDS = 100;
 const HEADERS = {
   Users:      ['userId','email','nickname','salt','hash','isFirstLogin','failCount','lockedUntil','createdAt','lastLoginAt','role'],
   Categories: ['categoryId','name','group','icon','sourceUrl','sort'],
-  Spots:      ['spotId','category','name','pref','lat','lng','distanceKm','durationMin','difficulty','description','videoFileId','sourceUrl','sample','updatedAt','elevation','area','geoStatus'],
+  Spots:      ['spotId','category','name','pref','lat','lng','distanceKm','durationMin','difficulty','description','videoFileId','sourceUrl','sample','updatedAt','elevation','area','geoStatus','base','city'],
   Plans:      ['planId','userId','title','date','start','mode','itemsJson','memo','createdAt','updatedAt'],
   Guides:     ['spotId','guideJson','model','createdAt']
 };
@@ -109,21 +109,7 @@ function setup() {
   const p = PropertiesService.getScriptProperties();
   if (!p.getProperty('PEPPER')) p.setProperty('PEPPER', Utilities.getUuid() + Utilities.getUuid());
 
-  if (rows_('Categories').length === 0) {
-    const src = 'https://j100s.com/100.html';
-    [
-      ['low_mountain', '日本100低山', 'main', '⛰', src, 1],
-      ['cycling', '日本100サイクリングコース', 'main', '🚲', src, 2],
-      ['sanpo', '日本100散歩道', 'main', '🚶', src, 3],
-      ['yuhodo', '日本100遊歩道', 'main', '🌿', src, 4],
-      ['meisui', '名水百選', 'other', '💧', src, 10],
-      ['taki', '日本の滝百選', 'other', '🌊', src, 11],
-      ['tanada', '日本の棚田百選', 'other', '🌾', src, 12],
-      ['sakura', '日本さくら名所100選', 'other', '🌸', src, 13],
-      ['michi', '日本の道100選', 'other', '🛣', src, 14],
-      ['shinrin', '森林浴の森日本100選', 'other', '🌲', src, 15]
-    ].forEach(r => append_('Categories', { categoryId: r[0], name: r[1], group: r[2], icon: r[3], sourceUrl: r[4], sort: r[5] }));
-  }
+  ensureCategories_();
 
   if (rows_('Spots').length === 0) {
     const now = new Date();
@@ -131,7 +117,6 @@ function setup() {
     [
       ['low_mountain', '高尾山', '東京都', 35.6251, 139.2437, 7, 180, '初級', '都心から近く、ケーブルカーも使える人気の山。薬王院への参道歩きも楽しめる。'],
       ['cycling', 'しまなみ海道', '広島県', 34.3093, 133.0950, 70, 420, '中級', '瀬戸内の島々を橋でつなぐ自転車道。海を見下ろす橋の上を走れる。'],
-      ['sanpo', '鎌倉 鶴岡八幡宮かいわい', '神奈川県', 35.3259, 139.5565, 4, 120, '初級', '若宮大路から八幡宮、小町通りへ。古都の寺社と町並みを歩く。'],
       ['yuhodo', '奥入瀬渓流', '青森県', 40.5560, 140.9450, 14, 300, '初級', '十和田湖から流れ出る渓流沿いの遊歩道。滝と苔むした岩が続く。'],
       ['meisui', '忍野八海', '山梨県', 35.4603, 138.8325, '', 60, '', '富士山の雪解け水が湧く八つの池。澄んだ水面に水草が揺れる。'],
       ['meisui', '柿田川湧水群', '静岡県', 35.1150, 138.9100, '', 45, '', '富士山の伏流水が湧き出す清流。展望台から湧き間を眺められる。'],
@@ -511,110 +496,260 @@ function planAdvice(d, token) {
   return { text: textOf_(json).replace(/[*#]/g, '').trim() };
 }
 
+/* ===================== カテゴリ管理 ===================== */
+const SRC_URL = 'https://j100s.com/100.html';
+const DEFAULT_CATEGORIES = [
+  ['low_mountain', '日本100低山', 'main', '⛰', 1],
+  ['cycling', '日本100サイクリングコース', 'main', '🚲', 2],
+  ['yuhodo', '日本100遊歩道', 'main', '🌿', 4],
+  ['meisui', '名水百選', 'other', '💧', 10],
+  ['taki', '日本の滝百選', 'other', '🌊', 11],
+  ['tanada', '日本の棚田百選', 'other', '🌾', 12],
+  ['sakura', '日本さくら名所100選', 'other', '🌸', 13],
+  ['koyo', '日本の紅葉名所100選', 'other', '🍁', 14],
+  ['michi', '日本の道100選', 'other', '🛣', 15],
+  ['shinrin', '森林浴の森日本100選', 'other', '🌲', 16]
+];
+const REMOVED_CATEGORIES = ['sanpo']; // 日本100散歩道は廃止
+
+/** 足りないカテゴリを追加し、廃止カテゴリとそのスポット・解説を削除（何度実行しても安全） */
+function ensureCategories_() {
+  const have = rows_('Categories').map(c => String(c.categoryId));
+  DEFAULT_CATEGORIES.forEach(r => {
+    if (have.indexOf(r[0]) < 0) append_('Categories', { categoryId: r[0], name: r[1], group: r[2], icon: r[3], sourceUrl: SRC_URL, sort: r[4] });
+  });
+  rows_('Categories').filter(c => REMOVED_CATEGORIES.indexOf(String(c.categoryId)) >= 0).reverse()
+    .forEach(c => sheet_('Categories').deleteRow(c._row));
+
+  const spots = rows_('Spots');
+  const removed = spots.filter(s => REMOVED_CATEGORIES.indexOf(String(s.category)) >= 0);
+  if (removed.length) {
+    const ids = removed.map(s => String(s.spotId));
+    removed.reverse().forEach(s => sheet_('Spots').deleteRow(s._row));
+    rows_('Guides').filter(g => ids.indexOf(String(g.spotId)) >= 0).reverse()
+      .forEach(g => sheet_('Guides').deleteRow(g._row));
+    Logger.log(`廃止カテゴリのスポットを ${removed.length} 件削除しました`);
+  }
+}
+
 /* ===================== 百選リストの一括登録 ===================== */
 /**
  * 使い方：
- *  1) 登録したいリストを、シート名「import_カテゴリID」で取り込む（例：import_low_mountain）
- *     1行目は見出し。次の見出し名を自動で読み取ります（無い列は空でOK）：
- *       名称：山名／名称／名前／コース名／スポット名　　都道府県：所在地／都道府県
- *       エリア　標高　距離（km）　所要時間（分）　難易度　説明／概要　緯度　経度　動画ID
- *  2) importAll を実行 → Spotsへ登録（同じカテゴリ＋名称は上書き、二重登録なし）
+ *  1) 登録したいリストを、このスプレッドシートに「新しいシート」として取り込む
+ *     シート名は「import_カテゴリID」か、リスト名そのまま（「低山」「滝」などの語で自動判定）。
+ *     見出し行は1行目でなくても自動で探します。
+ *  2) importAll を実行 → Spotsへ登録（同じカテゴリ＋名称＋都道府県は上書き、二重登録なし）
  *     そのカテゴリのサンプル行（sample=TRUE）は削除されます。
- *  3) 続けて緯度経度の無い行を自動で位置検索します（geocodeSpots）。
+ *  3) 続けて緯度経度の無い行を自動で位置検索します（件数が多いときは1分後に自動で続きを実行）。
  */
+const CATEGORY_KEYWORDS = {
+  low_mountain: ['低山'], cycling: ['サイクリング', '自転車'], yuhodo: ['遊歩道', '遊歩'],
+  meisui: ['名水'], taki: ['滝'], tanada: ['棚田'], sakura: ['さくら', '桜'], koyo: ['紅葉'],
+  michi: ['道100', '道百', '道の100', '_michi'], shinrin: ['森林']
+};
+const COLS = {
+  name: ['山名', 'コース名', 'スポット名', '遊歩道名', '散歩道名', '名称', '名前', '滝名', '施設名', '棚田名', '森林名'],
+  pref: ['都道府県', '所在地'], city: ['市町村', '自治体'], area: ['エリア', '地方'], elevation: ['標高'],
+  distanceKm: ['距離'], durationMin: ['所要時間'], difficulty: ['難易度'],
+  description: ['説明', '概要', '紹介', '特徴', '見どころ'], terrain: ['地形', '起伏'], scenery: ['景観'],
+  base: ['拠点', 'レンタサイクル'], lat: ['緯度'], lng: ['経度'], videoFileId: ['動画']
+};
+const norm_ = v => String(v == null ? '' : v).normalize('NFKC').trim();
+const spotKey_ = (cat, name, pref) => [cat, norm_(name), norm_(pref).split(/[・、,\/\s]+/)[0]].join('|');
+
+function detectCategory_(sheetName, catIds) {
+  const n = norm_(sheetName);
+  if (/集計|サマリー|概要|summary/i.test(n)) return '';
+  const m = n.match(/^import[\s_\-]*(.+)$/i);
+  if (m && catIds.indexOf(m[1].trim()) >= 0) return m[1].trim();
+  for (const id in CATEGORY_KEYWORDS) {
+    if (catIds.indexOf(id) >= 0 && CATEGORY_KEYWORDS[id].some(k => n.indexOf(k) >= 0)) return id;
+  }
+  return '';
+}
+
+function findHeader_(values) {
+  for (let i = 0; i < Math.min(values.length, 15); i++) {
+    const head = values[i].map(norm_);
+    if (head.some(h => COLS.name.some(k => h.indexOf(k) >= 0))) return i;
+  }
+  return -1;
+}
+
+/** Spots を丸ごと読み書き（大量件数でも速い） */
+function readSpots_() {
+  const sh = sheet_('Spots');
+  const n = HEADERS.Spots.length;
+  const last = sh.getLastRow();
+  const v = last > 1 ? sh.getRange(2, 1, last - 1, n).getValues() : [];
+  return v.map(r => { const o = {}; HEADERS.Spots.forEach((h, j) => o[h] = r[j]); return o; });
+}
+function writeSpots_(list) {
+  const sh = sheet_('Spots');
+  const n = HEADERS.Spots.length;
+  const last = sh.getLastRow();
+  if (last > 1) sh.getRange(2, 1, last - 1, n).clearContent();
+  if (list.length) sh.getRange(2, 1, list.length, n).setValues(list.map(o => HEADERS.Spots.map(h => o[h] == null ? '' : o[h])));
+  if (sh.getLastRow() > list.length + 1) sh.deleteRows(list.length + 2, sh.getLastRow() - list.length - 1);
+}
+
 function importAll() {
+  ensureCategories_();
   const book = ss_();
-  const cats = rows_('Categories').map(c => String(c.categoryId));
-  const targets = book.getSheets().filter(sh => /^import_/.test(sh.getName()));
-  if (!targets.length) throw new Error('「import_カテゴリID」という名前のシートがありません');
+  const catIds = rows_('Categories').map(c => String(c.categoryId));
+  const system = Object.keys(HEADERS);
+  const targets = book.getSheets().filter(sh => system.indexOf(sh.getName()) < 0)
+    .map(sh => ({ sh, cat: detectCategory_(sh.getName(), catIds) })).filter(t => t.cat);
+  if (!targets.length) {
+    throw new Error(
+      '取り込むリストのシートが見つかりません。\n' +
+      '対象スプレッドシート：「' + book.getName() + '」 ' + book.getUrl() + '\n' +
+      'このスプレッドシート内のシート：' + book.getSheets().map(x => '「' + x.getName() + '」').join(' ') + '\n' +
+      'リストを上のスプレッドシートに「新しいシート」として取り込んでから、もう一度実行してください。');
+  }
 
   withLock_(() => {
-    targets.forEach(sh => {
-      const cat = sh.getName().replace(/^import_/, '');
-      if (cats.indexOf(cat) < 0) { Logger.log(`スキップ：カテゴリID「${cat}」がCategoriesにありません`); return; }
+    let spots = readSpots_();
+    const index = {};
+    spots.forEach((s, i) => index[spotKey_(s.category, s.name, s.pref)] = i);
+    let maxId = spots.reduce((m, s) => Math.max(m, +(String(s.spotId).replace(/\D/g, '')) || 0), 0);
+    const doneCats = {};
+
+    targets.forEach(({ sh, cat }) => {
       const v = sh.getDataRange().getValues();
-      const head = v.shift().map(h => String(h).trim());
-      const col = names => head.findIndex(h => names.some(n => h.indexOf(n) === 0));
-      const ix = {
-        name: col(['山名', '名称', '名前', 'コース名', 'スポット名', '遊歩道名', '散歩道名']),
-        pref: col(['所在地', '都道府県']), area: col(['エリア', '地方']), elevation: col(['標高']),
-        distanceKm: col(['距離']), durationMin: col(['所要時間']), difficulty: col(['難易度']),
-        description: col(['説明', '概要', '紹介']), lat: col(['緯度']), lng: col(['経度']), videoFileId: col(['動画'])
-      };
-      if (ix.name < 0) { Logger.log(`スキップ：${sh.getName()} に名称の列がありません`); return; }
+      const hr = findHeader_(v);
+      if (hr < 0) { Logger.log(`スキップ：「${sh.getName()}」に名称の列が見つかりません`); return; }
+      const head = v[hr].map(norm_);
+      const ix = {};
+      Object.keys(COLS).forEach(k => ix[k] = head.findIndex(h => COLS[k].some(w => h.indexOf(w) >= 0)));
+      if (ix.name === ix.description) ix.description = -1;
+      if (ix.pref === ix.city) ix.city = -1;
 
-      // サンプル行の削除（下から）
-      rows_('Spots').filter(s => s.category === cat && isTrue_(s.sample)).reverse()
-        .forEach(s => sheet_('Spots').deleteRow(s._row));
+      if (!doneCats[cat]) { // サンプル行を除外（1カテゴリ1回）
+        spots = spots.filter(s => !(s.category === cat && isTrue_(s.sample)));
+        Object.keys(index).forEach(k => delete index[k]);
+        spots.forEach((s, i) => index[spotKey_(s.category, s.name, s.pref)] = i);
+        doneCats[cat] = true;
+      }
 
-      const existing = rows_('Spots');
-      let maxId = existing.reduce((m, s) => Math.max(m, +(String(s.spotId).replace(/\D/g, '')) || 0), 0);
       let added = 0, updated = 0;
-      v.forEach(r => {
-        const g = k => ix[k] >= 0 ? String(r[ix[k]] ?? '').trim() : '';
+      v.slice(hr + 1).forEach(r => {
+        const g = k => ix[k] >= 0 ? norm_(r[ix[k]]) : '';
         const name = g('name'); if (!name) return;
-        const elev = g('elevation').replace(/ｍ/g, 'm');
+        const elev = g('elevation');
+        const desc = [
+          g('description') || [g('area') && `${g('area')}エリア`, elev && `標高${elev}`].filter(Boolean).join('、') + '。',
+          g('terrain') && `地形：${g('terrain')}。`, g('scenery') && `景観：${g('scenery')}。`, g('base') && `拠点：${g('base')}。`
+        ].filter(Boolean).join(' ');
         const rec = {
-          category: cat, name, pref: g('pref'), area: g('area'), elevation: elev,
+          category: cat, name, pref: g('pref'), city: g('city'), area: g('area'), elevation: elev, base: g('base'),
           distanceKm: g('distanceKm').replace(/[^\d.]/g, ''), durationMin: g('durationMin').replace(/[^\d]/g, ''),
-          difficulty: g('difficulty'),
-          description: g('description') || [g('area') && `${g('area')}エリア`, elev && `標高${elev}`].filter(Boolean).join('、') + '。',
-          sourceUrl: 'https://j100s.com/100.html', sample: false, updatedAt: new Date()
+          difficulty: g('difficulty'), description: desc, sourceUrl: SRC_URL, sample: false, updatedAt: new Date()
         };
-        if (g('lat') && g('lng')) { rec.lat = +g('lat'); rec.lng = +g('lng'); rec.geoStatus = '手入力'; }
+        if (+g('lat') && +g('lng')) { rec.lat = +g('lat'); rec.lng = +g('lng'); rec.geoStatus = '手入力'; }
         if (g('videoFileId')) rec.videoFileId = g('videoFileId');
-        const hit = existing.find(s => s.category === cat && s.name === name);
-        if (hit) { update_('Spots', hit._row, rec); updated++; }
-        else {
+        const key = spotKey_(cat, name, rec.pref);
+        if (index[key] !== undefined) {
+          const cur = spots[index[key]];
+          Object.keys(rec).forEach(k => { if (rec[k] !== '' || k === 'description') cur[k] = rec[k]; });
+          updated++;
+        } else {
           rec.spotId = 'S' + String(++maxId).padStart(4, '0');
-          append_('Spots', rec); added++;
+          index[key] = spots.push(rec) - 1; added++;
         }
       });
-      Logger.log(`${sh.getName()}：追加 ${added} 件／更新 ${updated} 件`);
+      Logger.log(`「${sh.getName()}」→ ${cat}：追加 ${added} 件／更新 ${updated} 件`);
     });
+    writeSpots_(spots);
   });
-  geocodeSpots();
   clearMasterCache();
+  geocodeSpots();
 }
 
 /**
  * 緯度経度が空の行を Google Maps（GAS標準）で位置検索。
- * 検索結果の住所が「所在地」の都道府県と合わないときは登録せず、geoStatus に「要確認」と書きます。
- * 1日の検索回数に上限があるため、途中で止まったら翌日にもう一度実行してください。
+ * 検索結果の住所が都道府県と合わないものは登録せず「要確認」にします（要確認の行は再検索しません）。
+ * 約4分で区切り、残りがあれば1分後に自動で続きを実行します。
+ * 1日の検索上限に達したら、翌日に自動で再開します。
  */
 function geocodeSpots() {
+  ScriptApp.getProjectTriggers().filter(t => t.getHandlerFunction() === 'geocodeSpots')
+    .forEach(t => ScriptApp.deleteTrigger(t));
+  const started = Date.now();
   const geocoder = Maps.newGeocoder().setLanguage('ja').setRegion('jp');
-  const list = rows_('Spots').filter(s => !(+s.lat) || !(+s.lng));
-  let ok = 0, ng = 0;
-  list.forEach(s => {
-    const prefs = String(s.pref || '').split(/[・、,\s]+/).filter(Boolean);
-    const inner = String(s.name).match(/[（(]([^）)]+)[）)]/);
-    const base = String(s.name).replace(/[（(][^）)]*[）)]/g, '').trim();
+  const spots = readSpots_();
+  const todo = spots.filter(s => (!(+s.lat) || !(+s.lng)) && !/^要確認/.test(String(s.geoStatus)));
+  let ok = 0, ng = 0, stopped = '';
+
+  for (const s of todo) {
+    if (Date.now() - started > 4 * 60 * 1000) { stopped = 'time'; break; }
+    const prefs = norm_(s.pref).split(/[・、,\/\s]+/).filter(Boolean);
+    const p0 = prefs[0] || '';
+    const city = norm_(s.city).replace(/[（(][^）)]*[）)]/g, '').split(/[・、～〜\/]/)[0].trim();
+    const name = norm_(s.name);
+    const inner = name.match(/[（(]([^）)]+)[）)]/);
+    const base = name.replace(/[（(][^）)]*[）)]/g, '').trim();
     const queries = [];
-    if (inner) queries.push(`${inner[1]} ${prefs[0] || ''}`);
-    queries.push(`${base} ${prefs[0] || ''}`);
-    if (s.category === 'low_mountain' && !/[山岳峰]$/.test(base)) queries.push(`${base}山 ${prefs[0] || ''}`);
+    if (s.base) {
+      const b = norm_(s.base).split(/[・、,\/]/)[0].replace(/(前|周辺|に多数|等の各拠点|等|など|に拠点多数|各所).*$/, '').trim();
+      if (b) queries.push(`${b} ${p0}`);
+    }
+    if (city) queries.push(`${base} ${p0}${city}`);
+    if (inner) queries.push(`${inner[1]} ${p0}`);
+    queries.push(`${base} ${p0}`);
+    base.split(/[・、]/).map(x => x.trim()).filter(x => x && x !== base).forEach(x => queries.push(`${x} ${p0}`));
+    if (s.category === 'low_mountain' && !/[山岳峰]$/.test(base)) queries.push(`${base}山 ${p0}`);
 
     let found = null;
-    for (const q of queries) {
-      const res = geocoder.geocode(q.trim());
-      Utilities.sleep(150);
-      const hit = (res.results || []).find(r => {
-        const comps = (r.address_components || []).map(c => c.long_name);
-        return !prefs.length || prefs.some(p => comps.indexOf(p) >= 0);
-      });
-      if (hit) { found = hit.geometry.location; break; }
+    try {
+      for (const q of queries) {
+        const res = geocoder.geocode(q.trim());
+        Utilities.sleep(120);
+        const hit = (res.results || []).find(r => {
+          const comps = (r.address_components || []).map(c => c.long_name);
+          return !prefs.length || prefs.some(p => comps.indexOf(p) >= 0);
+        });
+        if (hit) { found = hit.geometry.location; break; }
+      }
+    } catch (e) {
+      if (/too many times|上限|quota/i.test(String(e))) { stopped = 'quota'; break; }
+      throw e;
     }
     if (found) {
-      update_('Spots', s._row, { lat: Math.round(found.lat * 1e5) / 1e5, lng: Math.round(found.lng * 1e5) / 1e5, geoStatus: '自動（確認推奨）' });
-      ok++;
-    } else {
-      update_('Spots', s._row, { geoStatus: '要確認：位置が見つかりません' });
-      ng++;
-    }
+      s.lat = Math.round(found.lat * 1e5) / 1e5; s.lng = Math.round(found.lng * 1e5) / 1e5;
+      s.geoStatus = '自動（確認推奨）'; ok++;
+    } else { s.geoStatus = '要確認：位置が見つかりません'; ng++; }
+  }
+
+  withLock_(() => {
+    // 実行中に他で書き換えられた行を壊さないよう、位置情報だけを最新データへ反映
+    const latest = readSpots_();
+    const byId = {}; spots.forEach(s => byId[s.spotId] = s);
+    latest.forEach(s => {
+      const m = byId[s.spotId];
+      if (m && !(+s.lat) && m.geoStatus) { s.lat = m.lat; s.lng = m.lng; s.geoStatus = m.geoStatus; }
+    });
+    writeSpots_(latest);
   });
-  Logger.log(`位置検索：成功 ${ok} 件／要確認 ${ng} 件`);
   clearMasterCache();
+
+  const rest = todo.length - ok - ng;
+  Logger.log(`位置検索：成功 ${ok} 件／要確認 ${ng} 件／残り ${rest} 件`);
+  if (stopped === 'time' && rest > 0) {
+    ScriptApp.newTrigger('geocodeSpots').timeBased().after(60 * 1000).create();
+    Logger.log('残りは1分後に自動で続けます');
+  } else if (stopped === 'quota') {
+    ScriptApp.newTrigger('geocodeSpots').timeBased().after(24 * 60 * 60 * 1000).create();
+    Logger.log('本日の検索上限に達しました。24時間後に自動で再開します');
+  }
+}
+
+/** 「要確認」の行をもう一度位置検索したいとき */
+function retryGeocode() {
+  const spots = readSpots_();
+  spots.forEach(s => { if (/^要確認/.test(String(s.geoStatus))) s.geoStatus = ''; });
+  writeSpots_(spots);
+  geocodeSpots();
 }
 
 /* ===================== 動作テスト（エディタから実行） ===================== */

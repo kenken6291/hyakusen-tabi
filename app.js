@@ -303,7 +303,7 @@ function filteredSpots() {
 
 function renderSpots() {
   const list = filteredSpots();
-  $('#resultCount').textContent = `${list.length} 件`;
+  $('#resultCount').textContent = list.length > 200 ? `${list.length} 件（一覧は先頭200件。分野や都道府県で絞り込むと全部見られます）` : `${list.length} 件`;
   $('#spotList').innerHTML = list.length ? list.slice(0, 200).map(s => {
     const c = catOf(s.category);
     const info = [s.pref, s.elevation ? `標高${s.elevation}` : '', s.distanceKm ? `約${s.distanceKm}km` : '', s.durationMin ? `目安${s.durationMin}分` : '', s.difficulty].filter(Boolean).join('　');
