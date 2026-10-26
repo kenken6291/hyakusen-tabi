@@ -17,7 +17,7 @@ const HASH_ROUNDS = 100;
 const HEADERS = {
   Users:      ['userId','email','nickname','salt','hash','isFirstLogin','failCount','lockedUntil','createdAt','lastLoginAt','role'],
   Categories: ['categoryId','name','group','icon','sourceUrl','sort'],
-  Spots:      ['spotId','category','name','pref','lat','lng','distanceKm','durationMin','difficulty','description','videoFileId','sourceUrl','sample','updatedAt'],
+  Spots:      ['spotId','category','name','pref','lat','lng','distanceKm','durationMin','difficulty','description','videoFileId','sourceUrl','sample','updatedAt','elevation','area','geoStatus'],
   Plans:      ['planId','userId','title','date','start','mode','itemsJson','memo','createdAt','updatedAt'],
   Guides:     ['spotId','guideJson','model','createdAt']
 };
@@ -58,6 +58,7 @@ function ss_() {
   const id = prop_('SPREADSHEET_ID');
   return id ? SpreadsheetApp.openById(id) : SpreadsheetApp.getActiveSpreadsheet();
 }
+const _checked = {};
 function sheet_(name) {
   const book = ss_();
   let sh = book.getSheetByName(name);
@@ -65,7 +66,14 @@ function sheet_(name) {
     sh = book.insertSheet(name);
     sh.getRange(1, 1, 1, HEADERS[name].length).setValues([HEADERS[name]]).setFontWeight('bold');
     sh.setFrozenRows(1);
+  } else if (!_checked[name]) {
+    // 列追加の自動移行：既存シートに足りない見出しを右端へ追加
+    const cur = sh.getRange(1, 1, 1, Math.max(1, sh.getLastColumn())).getValues()[0];
+    HEADERS[name].forEach((h, i) => {
+      if (cur[i] !== h && cur.indexOf(h) < 0) sh.getRange(1, i + 1).setValue(h).setFontWeight('bold');
+    });
   }
+  _checked[name] = true;
   return sh;
 }
 function rows_(name) {
@@ -268,7 +276,8 @@ function getMaster() {
   const spots = rows_('Spots').filter(s => s.spotId && s.name).map(s => ({
     spotId: String(s.spotId), category: s.category, name: s.name, pref: s.pref,
     lat: s.lat, lng: s.lng, distanceKm: s.distanceKm, durationMin: s.durationMin, difficulty: s.difficulty,
-    description: s.description, videoFileId: s.videoFileId, sourceUrl: s.sourceUrl, sample: isTrue_(s.sample)
+    description: s.description, videoFileId: s.videoFileId, sourceUrl: s.sourceUrl, sample: isTrue_(s.sample),
+    elevation: s.elevation || '', area: s.area || ''
   }));
   const res = { categories, spots };
   const str = JSON.stringify(res);
@@ -392,7 +401,7 @@ function generateGuide(d, token) {
   const userText =
     `スポット名：${spot.name}\n分類：${cat.name || spot.category}\n所在地：${spot.pref}\n` +
     (spot.distanceKm ? `距離：約${spot.distanceKm}km\n` : '') + (spot.durationMin ? `所要時間の目安：${spot.durationMin}分\n` : '') +
-    (spot.difficulty ? `難易度：${spot.difficulty}\n` : '') + `概要：${spot.description}\n\n上記スポットの案内を作成してください。`;
+    (spot.difficulty ? `難易度：${spot.difficulty}\n` : '') + (spot.elevation ? `標高：${spot.elevation}\n` : '') + `概要：${spot.description}\n\n上記スポットの案内を作成してください。`;
 
   const json = gemini_(model, {
     systemInstruction: { parts: [{ text: GUIDE_SYSTEM }] },
@@ -500,6 +509,112 @@ function planAdvice(d, token) {
     generationConfig: { temperature: 0.5 }
   });
   return { text: textOf_(json).replace(/[*#]/g, '').trim() };
+}
+
+/* ===================== 百選リストの一括登録 ===================== */
+/**
+ * 使い方：
+ *  1) 登録したいリストを、シート名「import_カテゴリID」で取り込む（例：import_low_mountain）
+ *     1行目は見出し。次の見出し名を自動で読み取ります（無い列は空でOK）：
+ *       名称：山名／名称／名前／コース名／スポット名　　都道府県：所在地／都道府県
+ *       エリア　標高　距離（km）　所要時間（分）　難易度　説明／概要　緯度　経度　動画ID
+ *  2) importAll を実行 → Spotsへ登録（同じカテゴリ＋名称は上書き、二重登録なし）
+ *     そのカテゴリのサンプル行（sample=TRUE）は削除されます。
+ *  3) 続けて緯度経度の無い行を自動で位置検索します（geocodeSpots）。
+ */
+function importAll() {
+  const book = ss_();
+  const cats = rows_('Categories').map(c => String(c.categoryId));
+  const targets = book.getSheets().filter(sh => /^import_/.test(sh.getName()));
+  if (!targets.length) throw new Error('「import_カテゴリID」という名前のシートがありません');
+
+  withLock_(() => {
+    targets.forEach(sh => {
+      const cat = sh.getName().replace(/^import_/, '');
+      if (cats.indexOf(cat) < 0) { Logger.log(`スキップ：カテゴリID「${cat}」がCategoriesにありません`); return; }
+      const v = sh.getDataRange().getValues();
+      const head = v.shift().map(h => String(h).trim());
+      const col = names => head.findIndex(h => names.some(n => h.indexOf(n) === 0));
+      const ix = {
+        name: col(['山名', '名称', '名前', 'コース名', 'スポット名', '遊歩道名', '散歩道名']),
+        pref: col(['所在地', '都道府県']), area: col(['エリア', '地方']), elevation: col(['標高']),
+        distanceKm: col(['距離']), durationMin: col(['所要時間']), difficulty: col(['難易度']),
+        description: col(['説明', '概要', '紹介']), lat: col(['緯度']), lng: col(['経度']), videoFileId: col(['動画'])
+      };
+      if (ix.name < 0) { Logger.log(`スキップ：${sh.getName()} に名称の列がありません`); return; }
+
+      // サンプル行の削除（下から）
+      rows_('Spots').filter(s => s.category === cat && isTrue_(s.sample)).reverse()
+        .forEach(s => sheet_('Spots').deleteRow(s._row));
+
+      const existing = rows_('Spots');
+      let maxId = existing.reduce((m, s) => Math.max(m, +(String(s.spotId).replace(/\D/g, '')) || 0), 0);
+      let added = 0, updated = 0;
+      v.forEach(r => {
+        const g = k => ix[k] >= 0 ? String(r[ix[k]] ?? '').trim() : '';
+        const name = g('name'); if (!name) return;
+        const elev = g('elevation').replace(/ｍ/g, 'm');
+        const rec = {
+          category: cat, name, pref: g('pref'), area: g('area'), elevation: elev,
+          distanceKm: g('distanceKm').replace(/[^\d.]/g, ''), durationMin: g('durationMin').replace(/[^\d]/g, ''),
+          difficulty: g('difficulty'),
+          description: g('description') || [g('area') && `${g('area')}エリア`, elev && `標高${elev}`].filter(Boolean).join('、') + '。',
+          sourceUrl: 'https://j100s.com/100.html', sample: false, updatedAt: new Date()
+        };
+        if (g('lat') && g('lng')) { rec.lat = +g('lat'); rec.lng = +g('lng'); rec.geoStatus = '手入力'; }
+        if (g('videoFileId')) rec.videoFileId = g('videoFileId');
+        const hit = existing.find(s => s.category === cat && s.name === name);
+        if (hit) { update_('Spots', hit._row, rec); updated++; }
+        else {
+          rec.spotId = 'S' + String(++maxId).padStart(4, '0');
+          append_('Spots', rec); added++;
+        }
+      });
+      Logger.log(`${sh.getName()}：追加 ${added} 件／更新 ${updated} 件`);
+    });
+  });
+  geocodeSpots();
+  clearMasterCache();
+}
+
+/**
+ * 緯度経度が空の行を Google Maps（GAS標準）で位置検索。
+ * 検索結果の住所が「所在地」の都道府県と合わないときは登録せず、geoStatus に「要確認」と書きます。
+ * 1日の検索回数に上限があるため、途中で止まったら翌日にもう一度実行してください。
+ */
+function geocodeSpots() {
+  const geocoder = Maps.newGeocoder().setLanguage('ja').setRegion('jp');
+  const list = rows_('Spots').filter(s => !(+s.lat) || !(+s.lng));
+  let ok = 0, ng = 0;
+  list.forEach(s => {
+    const prefs = String(s.pref || '').split(/[・、,\s]+/).filter(Boolean);
+    const inner = String(s.name).match(/[（(]([^）)]+)[）)]/);
+    const base = String(s.name).replace(/[（(][^）)]*[）)]/g, '').trim();
+    const queries = [];
+    if (inner) queries.push(`${inner[1]} ${prefs[0] || ''}`);
+    queries.push(`${base} ${prefs[0] || ''}`);
+    if (s.category === 'low_mountain' && !/[山岳峰]$/.test(base)) queries.push(`${base}山 ${prefs[0] || ''}`);
+
+    let found = null;
+    for (const q of queries) {
+      const res = geocoder.geocode(q.trim());
+      Utilities.sleep(150);
+      const hit = (res.results || []).find(r => {
+        const comps = (r.address_components || []).map(c => c.long_name);
+        return !prefs.length || prefs.some(p => comps.indexOf(p) >= 0);
+      });
+      if (hit) { found = hit.geometry.location; break; }
+    }
+    if (found) {
+      update_('Spots', s._row, { lat: Math.round(found.lat * 1e5) / 1e5, lng: Math.round(found.lng * 1e5) / 1e5, geoStatus: '自動（確認推奨）' });
+      ok++;
+    } else {
+      update_('Spots', s._row, { geoStatus: '要確認：位置が見つかりません' });
+      ng++;
+    }
+  });
+  Logger.log(`位置検索：成功 ${ok} 件／要確認 ${ng} 件`);
+  clearMasterCache();
 }
 
 /* ===================== 動作テスト（エディタから実行） ===================== */

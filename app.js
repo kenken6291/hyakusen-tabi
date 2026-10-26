@@ -297,7 +297,7 @@ function filteredSpots() {
   const { cat, pref, kw } = state.filter;
   const k = kw.trim().toLowerCase();
   return state.spots.filter(s =>
-    (!cat || s.category === cat) && (!pref || s.pref === pref) &&
+    (!cat || s.category === cat) && (!pref || String(s.pref).split(/[・、,\s]+/).includes(pref)) &&
     (!k || (s.name + s.description + s.pref).toLowerCase().includes(k)));
 }
 
@@ -306,7 +306,7 @@ function renderSpots() {
   $('#resultCount').textContent = `${list.length} 件`;
   $('#spotList').innerHTML = list.length ? list.slice(0, 200).map(s => {
     const c = catOf(s.category);
-    const info = [s.pref, s.distanceKm ? `約${s.distanceKm}km` : '', s.durationMin ? `目安${s.durationMin}分` : '', s.difficulty].filter(Boolean).join('　');
+    const info = [s.pref, s.elevation ? `標高${s.elevation}` : '', s.distanceKm ? `約${s.distanceKm}km` : '', s.durationMin ? `目安${s.durationMin}分` : '', s.difficulty].filter(Boolean).join('　');
     return `<li class="spot">
       <div class="meta"><span class="cat">${esc(c.icon)} ${esc(c.name)}</span>　${esc(info)}${String(s.sample).toUpperCase() === 'TRUE' ? '<span class="sample">サンプル</span>' : ''}</div>
       <h3>${esc(s.name)}</h3>
