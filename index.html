@@ -120,6 +120,17 @@ textarea{min-height:90px;resize:vertical}
 .stop .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;font-size:.88rem;margin-top:6px}
 .stop .row input{width:80px;min-height:36px;padding:4px 8px}
 .move{font-size:.82rem;color:var(--sub);padding:0 0 0 70px}
+.stop.home .dot{border-color:var(--tsuchi);background:var(--tsuchi)}
+.stop.home .body{background:var(--wash)}
+.origin{margin:12px 0 4px;padding:12px;border:1px solid var(--line);border-radius:var(--radius-s);background:var(--card)}
+.origin .withmic input{min-width:0}
+.cands{list-style:none;margin:8px 0 0;padding:0;display:flex;flex-direction:column;gap:6px}
+.cands button{width:100%;text-align:left;border:1px solid var(--line);background:var(--paper);border-radius:var(--radius-s);padding:8px 10px;cursor:pointer;min-height:44px}
+.originrow{display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;justify-content:space-between;margin-top:8px}
+.originrow .hint strong{color:var(--ink)}
+.check{display:flex;gap:6px;align-items:center;cursor:pointer;font-size:.92rem}
+.check input{width:20px;height:20px}
+@media (max-width:600px){.origin .withmic{flex-wrap:wrap}.origin .withmic input{flex:1 1 100%}}
 .empty{border:2px dashed var(--line);border-radius:var(--radius-l);padding:20px;color:var(--sub);text-align:center}
 .actions{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}
 .advice{white-space:pre-wrap;background:var(--ai-soft);border-radius:var(--radius-s);padding:12px;margin-top:10px}
@@ -241,6 +252,23 @@ footer a{color:var(--ai)}
       <div class="field"><label for="planStart">出発時刻</label><input type="time" id="planStart" value="09:00"></div>
       <div class="field"><label for="planMode">移動手段</label>
         <select id="planMode"><option value="car">車</option><option value="walk">徒歩</option><option value="bike">自転車</option><option value="transit">公共交通</option></select>
+      </div>
+    </div>
+    <div class="origin">
+      <div class="field">
+        <label for="originText">出発地（自宅・駅・住所など）</label>
+        <div class="withmic">
+          <input type="text" id="originText" list="originHistory" autocomplete="off" placeholder="例：新宿駅、自宅の住所">
+          <button class="mic" type="button" data-mic-target="originText" aria-label="音声で入力">🎤</button>
+          <button class="btn" type="button" id="btnOriginSearch">検索</button>
+          <button class="btn" type="button" id="btnOriginHere">現在地</button>
+        </div>
+        <datalist id="originHistory"></datalist>
+      </div>
+      <ul class="cands" id="originCands" aria-label="出発地の候補"></ul>
+      <div class="originrow">
+        <span id="originSet" class="hint">出発地が未設定です。設定すると最初のスポットまでの移動時間も計算します。</span>
+        <label class="check"><input type="checkbox" id="returnHome" checked> 最後は出発地に戻る</label>
       </div>
     </div>
     <div class="plangrid">
@@ -373,9 +401,10 @@ footer a{color:var(--ai)}
     <h2 id="helpTitle">使い方</h2>
     <ol class="steps">
       <li><h3>行き先をさがす</h3><p>「さがす」で分野（低山・サイクリング・遊歩道・名水・滝・棚田・桜・紅葉・道・森林浴など）を押し、都道府県やキーワードで絞り込みます。地図のピンを押すと名前が出ます。</p></li>
+      <li><h3>出発地を決める</h3><p>「計画」の出発地に駅名や住所を入れて「検索」、または「現在地」を押します。一度使った出発地は次から候補に出ます。「最後は出発地に戻る」にすると帰りの時刻も計算します。</p></li>
       <li><h3>計画に入れる</h3><p>気に入ったスポットの「計画に追加」を押すと「計画」の行程表に入ります。▲▼で順番を入れ替え、滞在時間（分）を変えると到着時刻が自動で計算されます。</p></li>
       <li><h3>立ち寄りやメモを足す</h3><p>お昼や休憩などは「立ち寄りスポットを追加」へ。🎤を押して話せば文字になります。言葉の間が少し空いても途切れず、話し終えて数秒たつと自動で止まります。もう一度🎤を押しても止まります。</p></li>
-      <li><h3>保存して道案内</h3><p>「計画を保存」で「マイ計画」に残ります（ログインが必要です）。「Googleマップで道案内」で、現在地から順番どおりのルートが開きます。</p></li>
+      <li><h3>保存して道案内</h3><p>「計画を保存」で「マイ計画」に残ります（ログインが必要です）。「Googleマップで道案内」で、出発地（未設定なら現在地）から順番どおりのルートが開きます。</p></li>
       <li><h3>現地で音声ガイドを聞く</h3><p>スポットの「案内を見る」→「解説を作る」で、歴史・見どころ・注意点が表示されます。「▶ 読み上げ」で音声ガイドが流れます。紹介動画がある場所は上に表示されます。</p></li>
     </ol>
     <p class="hint">音声入力はChrome・Edge・Safariで使えます。初回はマイクの使用を許可してください。</p>

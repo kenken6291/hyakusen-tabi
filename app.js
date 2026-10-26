@@ -23,7 +23,8 @@ const state = {
 };
 
 function newPlan() {
-  return { planId: '', title: '', date: '', start: '09:00', mode: 'car', memo: '', items: [] };
+  const last = LS.get('originHistory', [])[0] || null; // 前回の出発地を初期値に
+  return { planId: '', title: '', date: '', start: '09:00', mode: 'car', memo: '', items: [], origin: last, returnHome: true };
 }
 
 /* ---------- 共通 ---------- */
@@ -368,15 +369,54 @@ function travelMin(a, b) {
 const toMin = hm => { const [h, m] = (hm || '09:00').split(':').map(Number); return h * 60 + m; };
 const toHM = m => `${String(Math.floor(m / 60) % 24).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
 
+/** 位置が後から登録されたスポットの座標を、最新の百選データで補う */
+function syncItemCoords() {
+  state.plan.items.forEach(it => {
+    if (it.type !== 'spot' || hasPos(it)) return;
+    const s = state.spots.find(x => x.spotId === it.spotId);
+    if (hasPos(s)) { it.lat = s.lat; it.lng = s.lng; }
+  });
+}
+function renderOrigin() {
+  const o = state.plan.origin;
+  $('#returnHome').checked = state.plan.returnHome !== false;
+  if (o && o.name) {
+    $('#originText').value = o.name;
+    $('#originSet').innerHTML = `出発地：<strong>${esc(o.name)}</strong>`;
+  } else {
+    $('#originSet').textContent = '出発地が未設定です。設定すると最初のスポットまでの移動時間も計算します。';
+  }
+  const hist = LS.get('originHistory', []);
+  $('#originHistory').innerHTML = hist.map(h => `<option value="${esc(h.name)}"></option>`).join('');
+}
+function setOrigin(o) {
+  state.plan.origin = o;
+  if (o && hasPos(o) && o.name !== '現在地') { // 現在地は場所が変わるので履歴に残さない
+    const hist = LS.get('originHistory', []).filter(h => h.name !== o.name);
+    hist.unshift(o); LS.set('originHistory', hist.slice(0, 8));
+  }
+  $('#originCands').innerHTML = '';
+  saveDraft(); renderPlan();
+}
+
 function renderPlan() {
+  syncItemCoords();
   const p = state.plan;
   $('#planTitle').value = p.title; $('#planDate').value = p.date; $('#planStart').value = p.start;
   $('#planMode').value = p.mode; $('#planMemo').value = p.memo;
+  renderOrigin();
+  const o = p.origin && p.origin.name ? p.origin : null;
   let t = toMin(p.start);
-  const html = p.items.map((it, i) => {
+  let head = '';
+  if (o) {
+    head = `<li class="stop home"><div class="t">${toHM(t)}</div><div class="dot"></div>
+      <div class="body"><h4>出発：${esc(o.name)}</h4></div></li>`;
+  }
+  const html = head + p.items.map((it, i) => {
     let move = '';
-    if (i > 0) {
-      const mv = travelMin(p.items[i - 1], it);
+    const prev = i > 0 ? p.items[i - 1] : o;
+    if (prev) {
+      const mv = travelMin(prev, it);
       t += mv;
       move = mv ? `<li class="move">移動 約${mv}分（直線距離からの目安）</li>` : '';
     }
@@ -394,13 +434,31 @@ function renderPlan() {
         </div>
       </div></li>`;
   }).join('');
+  let tail = '';
+  if (p.items.length) {
+    if (o && p.returnHome !== false) {
+      const back = travelMin(p.items[p.items.length - 1], o);
+      t += back;
+      tail = (back ? `<li class="move">移動 約${back}分</li>` : '') +
+        `<li class="stop home"><div class="t">${toHM(t)}</div><div class="dot"></div>
+          <div class="body"><h4>帰着：${esc(o.name)}</h4></div></li>`;
+    } else {
+      tail = `<li class="move">行程終了の目安 ${toHM(t)}</li>`;
+    }
+  }
   $('#stopList').innerHTML = p.items.length
-    ? html + `<li class="move">帰着の目安 ${toHM(t)}</li>`
-    : '<li class="empty">「さがす」でスポットの「計画に追加」を押すと、ここに行程が並びます。</li>';
+    ? html + tail
+    : head + '<li class="empty">「さがす」でスポットの「計画に追加」を押すと、ここに行程が並びます。</li>';
 
   layerPlan.clearLayers();
   const pts = p.items.filter(hasPos).map(x => [+x.lat, +x.lng]);
-  p.items.filter(hasPos).forEach((x, i) => L.marker([+x.lat, +x.lng]).bindTooltip(`${i + 1}. ${x.name}`, { permanent: false }).addTo(layerPlan));
+  if (o && hasPos(o)) {
+    L.circleMarker([+o.lat, +o.lng], { radius: 9, weight: 3, color: '#FFFFFF', fillColor: '#8A5A2B', fillOpacity: 1 })
+      .bindTooltip('出発地：' + o.name).addTo(layerPlan);
+    pts.unshift([+o.lat, +o.lng]);
+    if (p.returnHome !== false && p.items.some(hasPos)) pts.push([+o.lat, +o.lng]);
+  }
+  p.items.filter(hasPos).forEach((x, i) => L.circleMarker([+x.lat, +x.lng], PIN).bindTooltip(`${i + 1}. ${x.name}`).addTo(layerPlan));
   if (pts.length > 1) L.polyline(pts, { color: '#2B4F7A', weight: 4, dashArray: '6 6' }).addTo(layerPlan);
   if (pts.length) mapPlan.fitBounds(pts, { padding: [30, 30], maxZoom: 13 });
 }
@@ -421,6 +479,43 @@ function setupPlan() {
   $('#stopList').addEventListener('change', e => {
     if (e.target.dataset.stay) { state.plan.items[+e.target.dataset.stay].stay = Math.max(0, +e.target.value || 0); saveDraft(); renderPlan(); }
   });
+  const searchOrigin = async () => {
+    const q = $('#originText').value.trim();
+    if (!q) { toast('出発地を入れてください'); return; }
+    const hist = LS.get('originHistory', []).find(h => h.name === q);
+    if (hist) { setOrigin(hist); return; }
+    const btn = $('#btnOriginSearch'); busy(btn, true, '検索中…');
+    try {
+      const r = await api('geocode', { query: q });
+      if (!r.results.length) { $('#originCands').innerHTML = '<li class="hint">見つかりませんでした。駅名や住所を変えてお試しください。</li>'; }
+      else if (r.results.length === 1) setOrigin({ ...r.results[0], name: q.length <= 20 ? q : r.results[0].name });
+      else $('#originCands').innerHTML = r.results.map((c, i) => `<li><button type="button" data-cand="${i}">${esc(c.name)}</button></li>`).join('');
+      state._cands = r.results; state._candQ = q;
+    } catch (ex) { toast(ex.message, 4000); }
+    busy(btn, false);
+  };
+  $('#btnOriginSearch').onclick = searchOrigin;
+  $('#originText').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); searchOrigin(); } });
+  $('#originText').addEventListener('change', e => {
+    const h = LS.get('originHistory', []).find(x => x.name === e.target.value.trim());
+    if (h) setOrigin(h);
+  });
+  $('#originCands').addEventListener('click', e => {
+    const b = e.target.closest('[data-cand]'); if (!b) return;
+    const c = state._cands[+b.dataset.cand];
+    setOrigin({ name: state._candQ && state._candQ.length <= 20 ? `${state._candQ}（${c.name}）` : c.name, lat: c.lat, lng: c.lng });
+  });
+  $('#btnOriginHere').onclick = () => {
+    if (!navigator.geolocation) { toast('この端末では現在地を取得できません'); return; }
+    const btn = $('#btnOriginHere'); busy(btn, true, '取得中…');
+    navigator.geolocation.getCurrentPosition(pos => {
+      busy(btn, false);
+      setOrigin({ name: '現在地', lat: Math.round(pos.coords.latitude * 1e5) / 1e5, lng: Math.round(pos.coords.longitude * 1e5) / 1e5 });
+    }, () => { busy(btn, false); toast('現在地を取得できませんでした。位置情報の使用を許可してください。'); },
+    { enableHighAccuracy: true, timeout: 15000 });
+  };
+  $('#returnHome').onchange = e => { state.plan.returnHome = e.target.checked; saveDraft(); renderPlan(); };
+
   $('#btnAddCustom').onclick = () => {
     const v = $('#customStop').value.trim(); if (!v) return;
     state.plan.items.push({ type: 'custom', name: v, stay: 30, note: '' });
@@ -443,10 +538,17 @@ function setupPlan() {
     const stops = state.plan.items.filter(hasPos);
     if (!stops.length) { toast('地図上の場所がある行程がありません'); return; }
     const ll = s => `${s.lat},${s.lng}`;
-    const dest = stops[stops.length - 1];
-    const way = stops.slice(0, -1).slice(0, 9).map(ll).join('|');
+    const o = state.plan.origin && hasPos(state.plan.origin) ? state.plan.origin : null;
+    const back = o && state.plan.returnHome !== false;
+    const dest = back ? o : stops[stops.length - 1];
+    const wayStops = back ? stops : stops.slice(0, -1);
+    const way = wayStops.slice(0, 9).map(ll).join('|');
     const mode = { car: 'driving', walk: 'walking', bike: 'bicycling', transit: 'transit' }[state.plan.mode];
-    const url = `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(ll(dest))}` +
+    if (mode === 'transit' && stops.length > 1) toast('公共交通では経由地が使えないため、最初のスポットまでの案内を開きます', 4000);
+    const transitDest = mode === 'transit' ? stops[0] : dest;
+    const url = `https://www.google.com/maps/dir/?api=1` +
+      (o ? `&origin=${encodeURIComponent(ll(o))}` : '') +
+      `&destination=${encodeURIComponent(ll(transitDest))}` +
       (way && mode !== 'transit' ? `&waypoints=${encodeURIComponent(way)}` : '') + `&travelmode=${mode}`;
     window.open(url, '_blank', 'noopener');
   };

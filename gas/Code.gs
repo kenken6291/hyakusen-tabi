@@ -18,14 +18,14 @@ const HEADERS = {
   Users:      ['userId','email','nickname','salt','hash','isFirstLogin','failCount','lockedUntil','createdAt','lastLoginAt','role'],
   Categories: ['categoryId','name','group','icon','sourceUrl','sort'],
   Spots:      ['spotId','category','name','pref','lat','lng','distanceKm','durationMin','difficulty','description','videoFileId','sourceUrl','sample','updatedAt','elevation','area','geoStatus','base','city'],
-  Plans:      ['planId','userId','title','date','start','mode','itemsJson','memo','createdAt','updatedAt'],
+  Plans:      ['planId','userId','title','date','start','mode','itemsJson','memo','createdAt','updatedAt','originJson','returnHome'],
   Guides:     ['spotId','guideJson','model','createdAt']
 };
 
 /* ===================== ルーティング ===================== */
 const ROUTES = {
   register, login, forgotPassword, changePassword, logout, me,
-  getMaster,
+  getMaster, geocode,
   listPlans, savePlan, deletePlan,
   generateGuide, tts, planAdvice
 };
@@ -338,7 +338,10 @@ function planOut_(p) {
   let items = [];
   try { items = JSON.parse(p.itemsJson || '[]'); } catch (e) {}
   const fmt = v => v instanceof Date ? Utilities.formatDate(v, 'Asia/Tokyo', v.getFullYear() > 1900 ? 'yyyy-MM-dd' : 'HH:mm') : String(v || '');
-  return { planId: p.planId, title: p.title, date: fmt(p.date), start: fmt(p.start) || '09:00', mode: p.mode || 'car', memo: p.memo, items };
+  let origin = null;
+  try { origin = p.originJson ? JSON.parse(p.originJson) : null; } catch (e) {}
+  return { planId: p.planId, title: p.title, date: fmt(p.date), start: fmt(p.start) || '09:00', mode: p.mode || 'car', memo: p.memo, items,
+    origin, returnHome: p.returnHome === '' ? true : isTrue_(p.returnHome) };
 }
 function savePlan(d, token) {
   const u = auth_(token);
@@ -353,7 +356,9 @@ function savePlan(d, token) {
   const rec = {
     title, date: "'" + String(p.date || ''), start: "'" + String(p.start || '09:00'),
     mode: ['car', 'walk', 'bike', 'transit'].indexOf(p.mode) >= 0 ? p.mode : 'car',
-    itemsJson: JSON.stringify(items), memo: String(p.memo || '').slice(0, 3000), updatedAt: new Date()
+    itemsJson: JSON.stringify(items), memo: String(p.memo || '').slice(0, 3000), updatedAt: new Date(),
+    originJson: p.origin && p.origin.name ? JSON.stringify({ name: String(p.origin.name).slice(0, 80), lat: +p.origin.lat || '', lng: +p.origin.lng || '' }) : '',
+    returnHome: p.returnHome !== false
   };
   return withLock_(() => {
     if (p.planId) {
@@ -545,14 +550,35 @@ function pcmToWav_(pcm, rate, ch, bits) {
   return head.concat(Array.prototype.slice.call(pcm));
 }
 
+/* ===================== 出発地の検索 ===================== */
+/** 地名・駅名・住所 → 候補（最大5件）。同じ語は6時間キャッシュ */
+function geocode(d) {
+  const q = String(d.query || '').normalize('NFKC').trim().slice(0, 100);
+  if (!q) throw appErr_('出発地を入力してください');
+  const cache = CacheService.getScriptCache();
+  const key = 'geo_' + md5_(q);
+  const hit = cache.get(key);
+  if (hit) return { results: JSON.parse(hit) };
+  const res = Maps.newGeocoder().setLanguage('ja').setRegion('jp').geocode(q);
+  const results = (res.results || []).slice(0, 5).map(r => ({
+    name: String(r.formatted_address || q).replace(/^日本、\s*/, '').replace(/〒\d{3}-\d{4}\s*/, ''),
+    lat: Math.round(r.geometry.location.lat * 1e5) / 1e5,
+    lng: Math.round(r.geometry.location.lng * 1e5) / 1e5
+  }));
+  cache.put(key, JSON.stringify(results), 21600);
+  return { results };
+}
+
 /* ===================== 計画へのAIアドバイス ===================== */
 function planAdvice(d, token) {
   auth_(token);
   const p = d.plan || {};
   const modeName = { car: '車', walk: '徒歩', bike: '自転車', transit: '公共交通' }[p.mode] || '車';
   const lines = (p.items || []).slice(0, 30).map((it, i) => `${i + 1}. ${it.name}（滞在${it.stay}分）`).join('\n');
+  const from = p.origin && p.origin.name ? String(p.origin.name).slice(0, 80) : '未設定';
   const prompt =
-    `日帰り〜旅行の行程を確認してください。\n日付：${p.date || '未定'}　出発：${p.start || '09:00'}　移動：${modeName}\n行程：\n${lines}\n` +
+    `日帰り〜旅行の行程を確認してください。\n日付：${p.date || '未定'}　出発時刻：${p.start || '09:00'}　移動：${modeName}\n` +
+    `出発地：${from}${p.returnHome !== false && from !== '未設定' ? '（最後は出発地へ戻る）' : ''}\n行程：\n${lines}\n` +
     `メモ：${String(p.memo || '').slice(0, 500)}\n\n` +
     `次の観点で、具体的に短く助言してください：時間配分の無理、順番の入れ替え案、季節・天候の注意、持ち物、休憩や食事の取り方。`;
   const json = gemini_(prop_('GEMINI_MODEL', 'gemini-2.5-flash'), {

@@ -4,7 +4,7 @@
  */
 window.APP_CONFIG = {
   APP_NAME: '百選たびノート',
-  VERSION: 'v1.3.0',
+  VERSION: 'v1.4.0',
 
   // GAS ウェブアプリURL（デプロイ → ウェブアプリ のURLを貼り付け）
   GAS_URL: 'https://script.google.com/macros/s/AKfycbyzpfG7EDzgsoAquJeibBlrv6XUaJryiCCFszYn4EXfsBlWiYbywCPPOPrk4OsUmw2b8A/exec',
