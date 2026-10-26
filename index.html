@@ -138,6 +138,12 @@ textarea{min-height:90px;resize:vertical}
 .stop .place{font-size:.85rem;color:var(--sub)}
 .editbox{display:flex;flex-direction:column;gap:8px;margin-top:8px;padding-top:8px;border-top:1px dashed var(--line)}
 .editbox .addgrid input{min-height:40px}
+.warnpos{font-size:.85rem;color:var(--warn);margin:4px 0 0}
+.warnpos button{border:0;background:none;color:var(--ai);text-decoration:underline;cursor:pointer;padding:0;font:inherit}
+.posbox{border:1px solid var(--line);border-radius:var(--radius-s);background:var(--card);padding:8px 12px;margin:8px 0}
+.posbox summary{cursor:pointer;font-weight:700}
+.posbox .withmic{margin:8px 0 4px}
+.howto{font-size:.85rem;color:var(--sub);margin:4px 0;padding-left:1.3em}
 .move.route details{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-s);padding:6px 10px;margin:4px 0}
 .move.route summary{cursor:pointer;font-weight:700;color:var(--ai)}
 .rsteps{margin:6px 0 4px;padding-left:1.2em;font-size:.9rem;line-height:1.6}
@@ -411,6 +417,7 @@ footer a{color:var(--ai)}
         <span class="status" id="playStatus" aria-live="polite"></span>
       </div>
       <div class="here" id="hereInfo"></div>
+      <div id="guidePos"></div>
       <div id="guideContent"></div>
       <div class="gsec" id="guideMem">
         <h3>この場所の想い出</h3>
@@ -570,6 +577,7 @@ footer a{color:var(--ai)}
     <ol class="steps">
       <li><h3>行き先をさがす</h3><p>「さがす」で分野（低山・サイクリング・遊歩道・名水・滝・棚田・桜・紅葉・道・森林浴など）を押し、地方・都道府県やキーワードで絞り込みます。地方を選ぶと、都道府県の一覧がその地方だけになります（かっこ内は件数）。地図のピンを押すと名前が出ます。</p></li>
       <li><h3>出発地を決める</h3><p>「計画」の出発地に駅名や住所を入れて「検索」、または「現在地」を押します。一度使った出発地は次から候補に出ます。「最後は出発地に戻る」にすると帰りの時刻も計算します。移動はGoogleマップの経路検索で自動的に調べ、乗る路線・乗換駅・発着時刻まで行程表に入ります（区間を押すと開閉）。計画を保存すると経路も一緒に残ります。時間がたって電車の時刻が変わりそうなときは「経路を再検索」を押してください。</p></li>
+      <li><h3>位置が未登録の場所</h3><p>「📍位置が未登録です」と出たら「編集」を押し、Googleマップで場所を右クリック（スマホは長押し）して出る数字（例：35.62509, 139.24361）をコピーして貼り付けます。Googleマップの共有URLでもかまいません。出発地や立ち寄りの場所の欄にも貼り付けられます。</p></li>
       <li><h3>計画に入れる</h3><p>気に入ったスポットの「計画に追加」を押すと「計画」の行程表に入ります。▲▼で順番を入れ替え、滞在時間（分）を変えると到着時刻が自動で計算されます。</p></li>
       <li><h3>立ち寄りやメモを足す</h3><p>お昼や休憩などは「立ち寄りスポットを追加」へ。よく使うボタン（昼食60分など）を押すと名前と時間が入ります。入れる位置と場所（店名など）も選べます。追加したあとも「編集」で名前・時間・場所・メモを直せます。🎤を押して話せば文字になります。言葉の間が少し空いても途切れず、話し終えて数秒たつと自動で止まります。もう一度🎤を押しても止まります。</p></li>
       <li><h3>保存して道案内</h3><p>「計画を保存」で「マイ計画」に残ります（ログインが必要です）。「Googleマップで道案内」で、出発地（未設定なら現在地）から順番どおりのルートが開きます。</p></li>

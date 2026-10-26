@@ -438,6 +438,40 @@ function travelMin(a, b) {
 const toMin = hm => { const [h, m] = (hm || '09:00').split(':').map(Number); return h * 60 + m; };
 const toHM = m => `${String(Math.floor(m / 60) % 24).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
 
+/* ---------- Googleマップの座標・URLから位置を読む ---------- */
+/** 「35.62509, 139.24361」「35°37'30.3"N 139°14'37.0"E」「…/@35.6,139.2,15z」「…!3d35.6!4d139.2」「?q=35.6,139.2」に対応 */
+function parseLatLng(text) {
+  let t = String(text || '').normalize('NFKC').trim();
+  if (!t) return null;
+  try { t = decodeURIComponent(t); } catch {}
+  let lat, lng, m;
+  if ((m = t.match(/!3d(-?\d+(?:\.\d+)?)!4d(-?\d+(?:\.\d+)?)/)) ||
+      (m = t.match(/[?&](?:q|query|ll|destination|center|daddr)=(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/i)) ||
+      (m = t.match(/@(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/)) ||
+      (m = t.match(/^[(（]?\s*(-?\d{1,2}(?:\.\d+)?)\s*[,、，\s]\s*(-?\d{1,3}(?:\.\d+)?)\s*[)）]?$/))) {
+    lat = +m[1]; lng = +m[2];
+  } else if ((m = t.match(/(\d+)\s*[°度]\s*(\d+)\s*['′分]\s*([\d.]+)\s*["″秒]?\s*([NS北南])[\s,、]*(\d+)\s*[°度]\s*(\d+)\s*['′分]\s*([\d.]+)\s*["″秒]?\s*([EW東西])/i))) {
+    lat = (+m[1] + m[2] / 60 + m[3] / 3600) * (/[S南]/i.test(m[4]) ? -1 : 1);
+    lng = (+m[5] + m[6] / 60 + m[7] / 3600) * (/[W西]/i.test(m[8]) ? -1 : 1);
+  } else return null;
+  if (!(Math.abs(lat) <= 90 && Math.abs(lng) <= 180) || (lat === 0 && lng === 0)) return null;
+  return { lat: Math.round(lat * 1e5) / 1e5, lng: Math.round(lng * 1e5) / 1e5 };
+}
+/** 座標・URL・短縮URL（maps.app.goo.gl）を位置に変換。読めなければ null */
+async function resolveLatLng(text) {
+  const t = String(text || '').trim();
+  const p = parseLatLng(t);
+  if (p) return p;
+  if (/^https:\/\//i.test(t)) {
+    const r = await api('resolveMapUrl', { url: t });
+    return r && r.lat ? { lat: r.lat, lng: r.lng } : null;
+  }
+  return null;
+}
+const looksLikeLatLng = t => !!parseLatLng(t) || /^https:\/\/(maps\.app\.goo\.gl|goo\.gl\/maps|(www\.)?google\.[a-z.]+\/maps)/i.test(String(t).trim());
+const outOfJapan = p => p && !(p.lat > 20 && p.lat < 46.5 && p.lng > 122 && p.lng < 154.5);
+const gmapSearchUrl = q => `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(q)}`;
+
 /** 位置が後から登録されたスポットの座標を、最新の百選データで補う */
 function syncItemCoords() {
   state.plan.items.forEach(it => {
@@ -483,7 +517,8 @@ function routePoints() {
 // 座標は含めない（自動で位置が補われても再計算しないため）。出発地だけは座標を含める
 function routeSig(pts) {
   const p = state.plan;
-  return JSON.stringify([p.mode, p.date, p.start, pts.map(x => x.home || x.custom ? [x.name, x.stay, !!x.custom, x.lat || 0, x.lng || 0] : [x.name, x.stay])]);
+  const r3 = v => Math.round((+v || 0) * 1000) / 1000;
+  return JSON.stringify([p.mode, p.date, p.start, pts.map(x => [x.name, x.stay, !!x.custom, r3(x.lat), r3(x.lng)])]);
 }
 let routeTimer = null;
 function scheduleRoute(sig, pts, fresh) {
@@ -516,6 +551,7 @@ function estimateLeg(pts, i) {
   if (cur.custom && !hasPos(cur)) return { minutes: 0, source: 'custom' };
   let j = i - 1; while (j >= 0 && !hasPos(pts[j])) j--;
   if (j < 0 || !hasPos(cur)) return { minutes: null, source: 'none' };
+  if (km(pts[j], cur) < 0.05) return { minutes: 0, source: 'same' };
   return { minutes: travelMin(pts[j], cur), source: 'line' };
 }
 const GMODE = { car: 'driving', walk: 'walking', bike: 'bicycling', transit: 'transit' };
@@ -529,7 +565,7 @@ function stepHtml(s) {
   return `<li class="rs-drive">${esc(s.text)}（${s.km}km・${s.minutes}分）</li>`;
 }
 function moveHtml(l, pending) {
-  if (!l || l.source === 'custom') return '';
+  if (!l || l.source === 'custom' || l.source === 'same') return '';
   if (l.minutes == null) return `<li class="move warn">位置が登録されていないため、移動時間を計算できません</li>`;
   const mode = MODE_NAME[state.plan.mode];
   const calc = pending ? '<span class="calc">経路を検索中…</span>' : '';
@@ -556,6 +592,7 @@ function stopHtml(it, k, arrive, n) {
         <h4>${name}${custom ? '<span class="tag">立ち寄り</span>' : ''}</h4>
         ${custom && it.place ? `<div class="place">📍 ${esc(it.place)}</div>` : ''}
         ${it.note ? `<p class="note">${esc(it.note)}</p>` : ''}
+        ${!hasPos(it) && !(custom && !it.place) ? `<p class="warnpos">📍位置が未登録です。<button type="button" data-edit="${k}">編集</button>でGoogleマップの座標を貼り付けると、移動時間を計算できます。</p>` : ''}
         <div class="row">
           <label>${custom ? '必要時間' : '滞在'} <input type="number" min="0" max="1440" step="5" value="${esc(it.stay)}" data-stay="${k}" aria-label="${name}の${custom ? '必要時間' : '滞在時間'}（分）"> 分</label>
           <button class="btn small ghost" type="button" data-up="${k}" ${k === 0 ? 'disabled' : ''} aria-label="${name}を前へ">▲</button>
@@ -576,6 +613,15 @@ function stopHtml(it, k, arrive, n) {
             <button class="btn small" type="button" data-edsearch="${k}">検索</button>
             ${it.place ? `<button class="btn small ghost" type="button" data-edclear="${k}">場所を外す</button>` : ''}</div>
             <ul class="cands" id="ed-cands-${k}"></ul></div>` : ''}
+          <div class="field"><label for="ed-ll-${k}">位置（Googleマップの座標または共有URLを貼り付け）</label>
+            <input type="text" id="ed-ll-${k}" value="${hasPos(it) ? `${it.lat}, ${it.lng}` : ''}" placeholder="例：35.62509, 139.24361" inputmode="text" autocomplete="off">
+            <ol class="howto">
+              <li><a href="${gmapSearchUrl(it.name + ' ' + ((state.spots.find(s => s.spotId === it.spotId) || {}).pref || ''))}" target="_blank" rel="noopener">Googleマップで「${name}」を開く</a></li>
+              <li>場所を右クリック（スマホは長押し）→ 一番上の数字を押すとコピーされます</li>
+              <li>この欄に貼り付けて「変更を保存」</li>
+            </ol>
+            ${!custom && state.user && state.user.isAdmin ? `<label class="check"><input type="checkbox" id="ed-llm-${k}" checked> 百選データにも登録する（全員に反映・管理者）</label>` : ''}
+          </div>
           <div class="row">
             <button class="btn small primary" type="button" data-edsave="${k}">変更を保存</button>
             <button class="btn small ghost" type="button" data-edcancel="${k}">取り消す</button>
@@ -602,7 +648,7 @@ async function placeSearch(q) {
 function renderPlan() {
   // 編集中の入力値は、経路の再計算などで描き直しても消えないように控えておく
   const keep = {};
-  if (state.editIndex != null) ['name', 'stay', 'note', 'place'].forEach(f => {
+  if (state.editIndex != null) ['name', 'stay', 'note', 'place', 'll'].forEach(f => {
     const el = $(`#ed-${f}-${state.editIndex}`); if (el) keep[f] = el.value;
   });
   if (state.editIndex != null && state.editIndex >= state.plan.items.length) state.editIndex = null;
@@ -716,23 +762,12 @@ function setupPlan() {
     else if (d.edpick) {
       const c = state.editCands[+d.i];
       state.editPlace = { place: c.name, lat: c.lat, lng: c.lng };
+      const ll = $('#ed-ll-' + d.edpick); if (ll) ll.value = `${c.lat}, ${c.lng}`;
       $('#ed-place-' + d.edpick).value = c.name;
       $('#ed-cands-' + d.edpick).innerHTML = `<li class="hint">「変更を保存」で場所が確定します</li>`;
       return;
     }
-    else if (d.edsave) {
-      const k = +d.edsave, it = items[k];
-      if (it.type === 'custom') {
-        const nm = $('#ed-name-' + k).value.trim();
-        if (!nm) { toast('名前を入れてください'); return; }
-        it.name = nm;
-        if (state.editPlace) Object.assign(it, state.editPlace);
-      }
-      it.stay = Math.max(0, Math.min(1440, +$('#ed-stay-' + k).value || 0));
-      it.note = $('#ed-note-' + k).value.trim().slice(0, 200);
-      state.editIndex = null; state.editPlace = null;
-      toast('変更を保存しました（計画の保存は「計画を保存」で）');
-    }
+    else if (d.edsave) { saveStopEdit(+d.edsave, b); return; }
     else return;
     saveDraft(); renderPlan();
   });
@@ -744,7 +779,19 @@ function setupPlan() {
     if (!q) { toast('出発地を入れてください'); return; }
     const hist = LS.get('originHistory', []).find(h => h.name === q);
     if (hist) { setOrigin(hist); return; }
-    const btn = $('#btnOriginSearch'); busy(btn, true, '検索中…');
+    const btn = $('#btnOriginSearch');
+    if (looksLikeLatLng(q)) {
+      busy(btn, true, '読み取り中…');
+      try {
+        const pos = await resolveLatLng(q);
+        busy(btn, false);
+        if (!pos) { toast('座標を読み取れませんでした'); return; }
+        const nm = prompt('この出発地の名前を入れてください（例：自宅）', '自宅') || '指定した地点';
+        setOrigin({ name: nm.trim().slice(0, 40) || '指定した地点', lat: pos.lat, lng: pos.lng });
+      } catch (ex) { busy(btn, false); toast(ex.message, 5000); }
+      return;
+    }
+    busy(btn, true, '検索中…');
     try {
       const r = await api('geocode', { query: q });
       if (!r.results.length) { $('#originCands').innerHTML = '<li class="hint">見つかりませんでした。駅名や住所を変えてお試しください。</li>'; }
@@ -786,6 +833,18 @@ function setupPlan() {
   $('#btnCustomPlace').onclick = async e => {
     const q = $('#customPlace').value.trim();
     if (!q) { toast('場所を入れてください'); return; }
+    if (looksLikeLatLng(q)) {
+      busy(e.target, true, '読み取り中…');
+      try {
+        const pos = await resolveLatLng(q);
+        if (!pos) throw new Error('座標を読み取れませんでした');
+        state.customPlace = { place: `指定した地点（${pos.lat}, ${pos.lng}）`, lat: pos.lat, lng: pos.lng };
+        $('#customCands').innerHTML = '';
+        $('#customPlaceSet').innerHTML = `場所：<strong>${esc(state.customPlace.place)}</strong>`;
+      } catch (ex) { toast(ex.message, 5000); }
+      busy(e.target, false);
+      return;
+    }
     busy(e.target, true, '検索中…');
     try {
       const list = await placeSearch(q);
@@ -929,7 +988,69 @@ function openGuide(spotId) {
   const local = LS.get('guide_' + s.spotId, null);
   if (local) { state.guideData = local; renderGuide(local); $('#btnPlay').disabled = false; }
   loadSpotMemories(s.spotId);
+  renderGuidePos(s);
   showView('guide');
+}
+
+function renderGuidePos(s) {
+  const box = $('#guidePos');
+  const admin = !!(state.user && state.user.isAdmin);
+  if (hasPos(s) && !admin) { box.innerHTML = ''; return; }
+  box.innerHTML = `<details class="posbox" ${hasPos(s) ? '' : 'open'}>
+    <summary>${hasPos(s) ? '位置を修正する（管理者）' : '📍この場所の位置が未登録です'}</summary>
+    ${admin ? `<div class="withmic"><input type="text" id="gpLL" value="${hasPos(s) ? `${s.lat}, ${s.lng}` : ''}" placeholder="例：35.62509, 139.24361 またはGoogleマップのURL" aria-label="位置">
+      <button class="btn" type="button" id="gpSave">位置を登録</button></div>` :
+      '<p class="hint">管理者が登録するまでは、「計画」で「編集」を押すと自分の計画にだけ位置を入れられます。</p>'}
+    <ol class="howto">
+      <li><a href="${gmapSearchUrl(s.name + ' ' + s.pref)}" target="_blank" rel="noopener">Googleマップで「${esc(s.name)}」を開く</a></li>
+      <li>場所を右クリック（スマホは長押し）→ 一番上の数字を押すとコピーされます</li>
+      ${admin ? '<li>上の欄に貼り付けて「位置を登録」</li>' : ''}
+    </ol></details>`;
+}
+
+/** 行程の編集を保存（座標の貼り付け・管理者による百選データへの登録を含む） */
+async function saveStopEdit(k, btn) {
+  const items = state.plan.items, it = items[k];
+  const custom = it.type === 'custom';
+  let name = it.name;
+  if (custom) {
+    name = $('#ed-name-' + k).value.trim();
+    if (!name) { toast('名前を入れてください'); return; }
+  }
+  const llText = ($('#ed-ll-' + k) || { value: '' }).value.trim();
+  const curText = hasPos(it) ? `${it.lat}, ${it.lng}` : '';
+  let pos = null;
+  if (llText && llText !== curText) {
+    busy(btn, true, '位置を確認中…');
+    try { pos = await resolveLatLng(llText); } catch (ex) { busy(btn, false); toast(ex.message, 5000); return; }
+    busy(btn, false);
+    if (!pos) { toast('位置を読み取れませんでした。Googleマップで右クリック（長押し）して出る数字を貼り付けてください', 6000); return; }
+    if (outOfJapan(pos) && !confirm(`日本の外の位置です（${pos.lat}, ${pos.lng}）。このまま登録しますか？`)) return;
+  }
+  it.name = name;
+  if (custom && state.editPlace) Object.assign(it, state.editPlace);
+  if (pos) {
+    it.lat = pos.lat; it.lng = pos.lng;
+    if (custom && !it.place) it.place = `指定した地点（${pos.lat}, ${pos.lng}）`;
+  } else if (!llText && custom) { it.lat = ''; it.lng = ''; }
+  it.stay = Math.max(0, Math.min(1440, +$('#ed-stay-' + k).value || 0));
+  it.note = $('#ed-note-' + k).value.trim().slice(0, 200);
+
+  const master = $('#ed-llm-' + k);
+  if (pos && !custom && master && master.checked) {
+    busy(btn, true, '百選データに登録中…');
+    try {
+      await api('setSpotLocation', { spotId: it.spotId, lat: pos.lat, lng: pos.lng }, { auth: true });
+      const s = state.spots.find(x => x.spotId === it.spotId);
+      if (s) { s.lat = pos.lat; s.lng = pos.lng; }
+      toast(`「${it.name}」の位置を百選データに登録しました`);
+    } catch (ex) { toast(ex.message, 5000); }
+    busy(btn, false);
+  } else {
+    toast('変更を保存しました（計画の保存は「計画を保存」で）');
+  }
+  state.editIndex = null; state.editPlace = null;
+  saveDraft(); lastRenderKey = ''; renderPlan(); renderSpots();
 }
 
 function renderGuide(g) {
@@ -1024,6 +1145,22 @@ function setupGuide() {
   };
   $('#btnPlay').onclick = playNarration;
   $('#btnStop').onclick = stopAudio;
+  $('#guidePos').addEventListener('click', async e => {
+    const b = e.target.closest('#gpSave'); if (!b) return;
+    const s = state.guideSpot; if (!s) return;
+    busy(b, true, '登録中…');
+    try {
+      const pos = await resolveLatLng($('#gpLL').value);
+      if (!pos) throw new Error('位置を読み取れませんでした。Googleマップで右クリック（長押し）して出る数字を貼り付けてください');
+      if (outOfJapan(pos) && !confirm(`日本の外の位置です（${pos.lat}, ${pos.lng}）。このまま登録しますか？`)) { busy(b, false); return; }
+      await api('setSpotLocation', { spotId: s.spotId, lat: pos.lat, lng: pos.lng }, { auth: true });
+      s.lat = pos.lat; s.lng = pos.lng;
+      state.plan.items.forEach(it => { if (it.spotId === s.spotId) { it.lat = pos.lat; it.lng = pos.lng; } });
+      saveDraft(); lastRenderKey = ''; renderSpots();
+      toast(`「${s.name}」の位置を登録しました`);
+      renderGuidePos(s);
+    } catch (ex) { toast(ex.message, 5000); busy(b, false); }
+  });
   $('#btnHere').onclick = () => {
     const s = state.guideSpot;
     if (!hasPos(s)) { $('#hereInfo').textContent = 'このスポットには位置情報が登録されていません。'; return; }

@@ -26,7 +26,7 @@ const HEADERS = {
 /* ===================== ルーティング ===================== */
 const ROUTES = {
   register, login, forgotPassword, changePassword, logout, me,
-  getMaster, geocode, routeTimes,
+  getMaster, geocode, routeTimes, resolveMapUrl, setSpotLocation,
   listPlans, savePlan, deletePlan,
   generateGuide, tts, planAdvice,
   listMemories, saveMemory, deleteMemory, startUpload, uploadChunk, urlInfo
@@ -182,7 +182,12 @@ function auth_(token, allowFirst) {
   cache.put('sess_' + token, JSON.stringify(sess), SESSION_SEC); // 延長
   return sess;
 }
-const publicUser_ = u => ({ userId: u.userId, email: u.email, nickname: u.nickname, role: u.role || 'member' });
+const publicUser_ = u => ({ userId: u.userId, email: u.email, nickname: u.nickname, role: u.role || 'member', isAdmin: isAdmin_(u) });
+/** 管理者：Usersシートの role が admin、またはスクリプトプロパティ ADMIN_EMAILS（カンマ区切り）に含まれる */
+function isAdmin_(u) {
+  const list = prop_('ADMIN_EMAILS').toLowerCase().split(/[,\s]+/).filter(Boolean);
+  return u.role === 'admin' || list.indexOf(String(u.email || '').toLowerCase()) >= 0;
+}
 
 function sendTempMail_(email, nickname, temp, isReset) {
   const url = prop_('APP_URL');
@@ -575,6 +580,54 @@ function geocode(d) {
   return { results };
 }
 
+/* ===================== Googleマップの座標・URLから位置を読む ===================== */
+function parseLatLng_(t) {
+  t = String(t || '');
+  try { t = decodeURIComponent(t); } catch (e) {}
+  const m = t.match(/!3d(-?\d+(?:\.\d+)?)!4d(-?\d+(?:\.\d+)?)/) ||
+    t.match(/[?&](?:q|query|ll|destination|center|daddr)=(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/i) ||
+    t.match(/@(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/);
+  if (!m) return null;
+  const lat = +m[1], lng = +m[2];
+  if (!(Math.abs(lat) <= 90 && Math.abs(lng) <= 180) || (lat === 0 && lng === 0)) return null;
+  return { lat: Math.round(lat * 1e5) / 1e5, lng: Math.round(lng * 1e5) / 1e5 };
+}
+/** 短縮URL（maps.app.goo.gl など）をたどって座標を取り出す */
+function resolveMapUrl(d) {
+  let url = String(d.url || '').trim();
+  if (!/^https:\/\/((maps\.app\.goo\.gl|goo\.gl|g\.co)\/|(www\.|maps\.)?google\.[a-z.]+\/)/i.test(url)) throw appErr_('GoogleマップのURLを貼り付けてください');
+  const cache = CacheService.getScriptCache();
+  const key = 'mu_' + md5_(url);
+  const hit = cache.get(key);
+  if (hit) return JSON.parse(hit);
+  let pos = parseLatLng_(url);
+  for (let i = 0; i < 6 && !pos; i++) {
+    const res = UrlFetchApp.fetch(url, { followRedirects: false, muteHttpExceptions: true, headers: { 'User-Agent': 'Mozilla/5.0' } });
+    const h = res.getAllHeaders();
+    const loc = h.Location || h.location;
+    if (loc) { url = loc; pos = parseLatLng_(url); continue; }
+    pos = parseLatLng_(res.getContentText().slice(0, 500000));
+    break;
+  }
+  if (!pos) throw appErr_('このURLから位置を読み取れませんでした。Googleマップで場所を右クリック（長押し）して出る数字を貼り付けてください');
+  cache.put(key, JSON.stringify(pos), 21600);
+  return pos;
+}
+/** 百選スポットの位置を登録・修正（管理者のみ） */
+function setSpotLocation(d, token) {
+  const sess = auth_(token);
+  if (!isAdmin_(sess)) throw appErr_('百選データの位置を変更できるのは管理者だけです');
+  const lat = +d.lat, lng = +d.lng;
+  if (!(Math.abs(lat) <= 90 && Math.abs(lng) <= 180) || !lat || !lng) throw appErr_('位置が正しくありません');
+  return withLock_(() => {
+    const cell = sheet_('Spots').getRange('A:A').createTextFinder(String(d.spotId || '')).matchEntireCell(true).findNext();
+    if (!cell) throw appErr_('スポットが見つかりません');
+    update_('Spots', cell.getRow(), { lat: Math.round(lat * 1e5) / 1e5, lng: Math.round(lng * 1e5) / 1e5, geoStatus: `手入力（${sess.nickname}）`, updatedAt: new Date() });
+    clearMasterCache();
+    return { lat: Math.round(lat * 1e5) / 1e5, lng: Math.round(lng * 1e5) / 1e5 };
+  });
+}
+
 /* ===================== 経路の所要時間 ===================== */
 const ROUTE_MODES = { car: 'DRIVING', walk: 'WALKING', bike: 'BICYCLING', transit: 'TRANSIT' };
 
@@ -708,6 +761,7 @@ function routeTimes(d) {
     let leg;
     if (to.custom && !to.lat) leg = { minutes: 0, source: 'custom' };
     else if (!last || !to.lat) leg = { minutes: null, source: 'none' };
+    else if (Math.abs(last.lat - to.lat) < 0.0005 && Math.abs(last.lng - to.lng) < 0.0005) leg = { minutes: 0, km: 0, source: 'same' };
     else {
       leg = Object.assign({}, directions_(last, to, mode, new Date(t), fresh));
       // 電車・バス：実際の発車時刻までの待ちを含めて、到着時刻から所要時間を出す

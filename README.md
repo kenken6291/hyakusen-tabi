@@ -183,3 +183,8 @@
 - 保存先はスクリプトプロパティ `MEMORY_FOLDER_ID` のフォルダ。未設定なら初回に「hyakusen-tabi-memories」フォルダを自動作成します（DRIVE_FOLDER_ID があればその中）。
 - 画面に表示するため、写真・動画は「リンクを知っている全員が閲覧可」で保存します。想い出を削除したり写真を外したりすると、ファイルはゴミ箱に移ります。
 - シート `Memories`：memoryId, userId, nickname, spotId, spotName, planId, planTitle, title, date, text, mediaJson, visibility, lat, lng, createdAt, updatedAt
+
+### v1.10.0 Googleマップの座標で位置を登録
+- 計画の「編集」、出発地、立ち寄りの場所、案内画面に、Googleマップの座標（例：35.62509, 139.24361）・度分秒・共有URL（maps.app.goo.gl の短縮URLも可）を貼り付けて位置を登録できます。
+- 百選データ（Spotsシート）の位置を直せるのは管理者だけです。スクリプトプロパティ `ADMIN_EMAILS` に管理者のメールアドレス（複数はカンマ区切り）を入れるか、Usersシートの role を `admin` にしてください。管理者が登録した行は geoStatus が「手入力（ニックネーム）」になります。
+- 管理者以外の会員は、自分の計画の中だけに位置を入れられます。
