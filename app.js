@@ -47,12 +47,53 @@ function toast(msg, ms = 2600) {
   clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove('show'), ms);
 }
 
+/* ---------- Geminiモデル選択 ---------- */
+const MODEL_OPTIONS = Array.isArray(C.GEMINI_MODEL_OPTIONS) && C.GEMINI_MODEL_OPTIONS.length
+  ? C.GEMINI_MODEL_OPTIONS : [{ value: '', label: '自動モード（汎用の最新）' }];
+function currentModel() {
+  const v = LS.get('geminiModel', null);
+  if (v !== null && MODEL_OPTIONS.some(o => o.value === v)) return v;
+  return C.GEMINI_MODEL || '';
+}
+function modelLabel(v) {
+  const o = MODEL_OPTIONS.find(x => x.value === v);
+  return o ? o.label : (v || '自動モード（汎用の最新）');
+}
+function shortModelName(v) {
+  return v ? modelLabel(v).replace(/[（(].*$/, '').trim() : '自動';
+}
+function renderModelButton() {
+  const b = $('#btnModel'); if (!b) return;
+  const v = currentModel();
+  b.textContent = 'AI：' + shortModelName(v);
+  b.title = 'AIモデル：' + modelLabel(v);
+}
+function openModelDialog() {
+  const cur = currentModel();
+  $('#modelList').innerHTML = MODEL_OPTIONS.map((o, i) => `
+    <label class="modelopt">
+      <span>${esc(o.label)}</span>
+      <input type="radio" name="geminiModel" value="${esc(o.value)}" ${o.value === cur ? 'checked' : ''} id="mdl${i}">
+    </label>`).join('');
+  $('#modelList').onchange = e => {
+    const v = e.target.value;
+    LS.set('geminiModel', v); renderModelButton();
+    toast('AIモデル：' + modelLabel(v));
+    setTimeout(() => $('#dlgModel').close(), 250);
+  };
+  $('#dlgModel').showModal();
+}
+/** 実際に使われたモデルを知らせる（該当なしで切り替わった時） */
+function noteModel(r) {
+  if (r && r.fallback) toast(`「${modelLabel(r.requestedModel)}」が使えなかったため ${r.model} で作成しました`, 4500);
+}
+
 async function api(action, data = {}, { auth = false } = {}) {
   if (auth && !state.token) { openAuth('login'); throw new Error('ログインが必要です'); }
   const res = await fetch(C.GAS_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'text/plain;charset=utf-8' }, // CORSプリフライト回避
-    body: JSON.stringify({ action, data, token: state.token })
+    body: JSON.stringify({ action, data, token: state.token, model: currentModel() })
   });
   const json = await res.json();
   if (!json.ok) {
@@ -936,6 +977,7 @@ function setupPlan() {
     try {
       const r = await api('planAdvice', { plan: state.plan, schedule: state.scheduleText }, { auth: true });
       $('#adviceBox').innerHTML = `<div class="advice">${esc(r.text)}</div>`;
+      noteModel(r);
     } catch (ex) { toast(ex.message, 4000); }
     busy(e.target, false);
   };
@@ -1145,7 +1187,8 @@ function setupGuide() {
       LS.set('guide_' + s.spotId, r.guide);
       state.guideData = r.guide; renderGuide(r.guide);
       $('#btnPlay').disabled = false;
-      $('#playStatus').textContent = r.cached ? '保存済みの解説を表示しています' : '';
+      $('#playStatus').textContent = r.cached ? '保存済みの解説を表示しています' : (r.model ? 'AIモデル：' + r.model : '');
+      noteModel(r);
     } catch (ex) { toast(ex.message, 4000); }
     busy(e.target, false);
   };
@@ -1466,6 +1509,8 @@ function setupCommon() {
   document.title = `${C.APP_NAME} ${C.VERSION}`;
   $$('.tabs button').forEach(b => b.onclick = () => showView(b.dataset.view));
   $('#btnHelp').onclick = () => $('#dlgHelp').showModal();
+  $('#btnModel').onclick = openModelDialog;
+  renderModelButton();
   $$('dialog [data-close]').forEach(b => b.onclick = () => {
     const d = b.closest('dialog'); if (d.dataset.force) return; d.close();
   });

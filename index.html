@@ -244,6 +244,13 @@ dialog::backdrop{background:rgba(15,25,20,.55)}
 footer{max-width:1100px;margin:24px auto;padding:0 16px;font-size:.8rem;color:var(--sub)}
 footer a{color:var(--ai)}
 .loading{opacity:.6;pointer-events:none}
+/* AIモデル選択 */
+.modellist{display:flex;flex-direction:column;border:1px solid var(--line);border-radius:var(--radius-s);overflow:hidden;margin:4px 0 12px}
+.modelopt{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;min-height:56px;cursor:pointer;font-size:1.05rem;border-top:1px solid var(--line)}
+.modelopt:first-child{border-top:0}
+.modelopt:has(input:checked){background:var(--ai-soft)}
+.modelopt input{width:22px;height:22px;flex:none;accent-color:var(--ai);margin:0}
+@media (max-width:480px){.headbtns{flex-wrap:wrap;justify-content:flex-end}}
 </style>
 </head>
 <body>
@@ -263,6 +270,7 @@ footer a{color:var(--ai)}
     </div>
     <div class="headbtns">
       <button class="btn ghost" id="btnHelp" type="button">使い方</button>
+      <button class="btn ghost" id="btnModel" type="button" aria-haspopup="dialog">AI：自動</button>
       <button class="btn" id="btnAccount" type="button">ログイン</button>
     </div>
   </div>
@@ -569,6 +577,17 @@ footer a{color:var(--ai)}
   </div>
 </dialog>
 
+<!-- AIモデル選択 -->
+<dialog id="dlgModel" aria-labelledby="modelTitle">
+  <div class="dlg">
+    <button class="close" type="button" data-close aria-label="閉じる">×</button>
+    <h2 id="modelTitle">AIモデル</h2>
+    <p class="hint" style="margin-bottom:8px">「解説を作る」と「AIに計画を見てもらう」で使うGeminiのモデルを選びます。</p>
+    <div class="modellist" id="modelList" role="radiogroup" aria-labelledby="modelTitle"></div>
+    <p class="hint">選んだモデルが使えない時は、汎用の最新モデルに自動で切り替わります。音声ガイドの声は専用モデルのため変わりません。</p>
+  </div>
+</dialog>
+
 <!-- 使い方 -->
 <dialog id="dlgHelp" aria-labelledby="helpTitle">
   <div class="dlg">
@@ -583,6 +602,7 @@ footer a{color:var(--ai)}
       <li><h3>保存して道案内</h3><p>「計画を保存」で「マイ計画」に残ります（ログインが必要です）。「Googleマップで道案内」で、出発地（未設定なら現在地）から順番どおりのルートが開きます。</p></li>
       <li><h3>想い出を残す</h3><p>「想い出」タブの「＋ 想い出を記録」で、写真・動画・URL（ブログやYouTubeなど）と文章を保存できます。場所に百選の名前を入れると、その場所の案内画面にも表示されます。「会員に公開」にすると、ほかの会員も見られます。</p></li>
       <li><h3>現地で音声ガイドを聞く</h3><p>スポットの「案内を見る」→「解説を作る」で、歴史・見どころ・注意点が表示されます。「▶ 読み上げ」で音声ガイドが流れます。紹介動画がある場所は上に表示されます。</p></li>
+      <li><h3>AIモデルを選ぶ</h3><p>右上の「AI：自動」を押すと、解説やアドバイスに使うGeminiのモデルを選べます。ふだんは「自動モード（汎用の最新）」のままで大丈夫です。選んだモデルが使えない時は、自動で最新モデルに切り替わります。</p></li>
     </ol>
     <p class="hint">音声入力はChrome・Edge・Safariで使えます。初回はマイクの使用を許可してください。</p>
     <div class="helpnav"><span></span><button class="btn primary" type="button" data-close>はじめる</button></div>

@@ -3,7 +3,15 @@
  * スクリプトプロパティ：
  *   GEMINI_API_KEY（必須） / PEPPER（setupで自動生成） / SPREADSHEET_ID（任意：未設定ならバインド先）
  *   DRIVE_FOLDER_ID（任意：TTS音声キャッシュ保存先）
- *   GEMINI_MODEL（任意：既定 gemini-2.5-flash） / GEMINI_TTS_MODEL（任意：既定 gemini-2.5-flash-preview-tts）
+ *   GEMINI_MODEL（任意：未設定なら汎用の最新モデル） / GEMINI_TTS_MODEL（任意：既定 gemini-2.5-flash-preview-tts）
+ *
+ * 【Geminiモデルの決定順】（案内文・AIアドバイス）
+ *   1. 画面の「AIモデル」で選ばれたモデル（config.js の GEMINI_MODEL_OPTIONS）
+ *   2. スクリプトプロパティ GEMINI_MODEL
+ *   3. 汎用の最新モデル FALLBACK_GEMINI_MODELS を先頭から順に試す
+ *   ※ モデル名は "gemini-" で始まる英小文字・数字・ハイフン・ドットのみ受け付ける。
+ *   ※ 指定モデルに該当がない（廃止・未公開・名前違い）場合は、自動で 3 に切り替えて再実行する。
+ *   ※ 音声合成（TTS）は専用モデルのため GEMINI_TTS_MODEL を使う（画面の選択の影響を受けない）。
  *   APP_URL（任意：メール本文に載せるアプリURL）
  * コード変更後は「デプロイを管理 → 編集 → 新バージョン」で再デプロイが必要です。
  */
@@ -13,6 +21,14 @@ const SESSION_SEC = 21600;     // 6時間（CacheService上限）
 const MAX_FAIL = 5;            // 連続失敗でロック
 const LOCK_MIN = 15;
 const HASH_ROUNDS = 100;
+const GAS_VERSION = 'v1.11.0';
+
+// 指定なし・該当なしの時に使う汎用最新モデル（先頭から順に試す）
+//   gemini-flash-latest : Googleが常に最新の汎用モデルへ自動で差し替えるエイリアス
+//   gemini-4-hydrogen   : 2026年11月時点の汎用最新モデル（「日々の暮らしをサポート」）
+//   gemini-3.8-flash    : 最終的な保険
+const FALLBACK_GEMINI_MODELS = ['gemini-flash-latest', 'gemini-4-hydrogen', 'gemini-3.8-flash'];
+const GEMINI_MODEL_PATTERN = /^gemini-[a-z0-9][a-z0-9.\-]{0,60}$/;
 
 const HEADERS = {
   Users:      ['userId','email','nickname','salt','hash','isFirstLogin','failCount','lockedUntil','createdAt','lastLoginAt','role'],
@@ -28,12 +44,12 @@ const ROUTES = {
   register, login, forgotPassword, changePassword, logout, me,
   getMaster, geocode, routeTimes, resolveMapUrl, setSpotLocation,
   listPlans, savePlan, deletePlan,
-  generateGuide, tts, planAdvice,
+  generateGuide, tts, planAdvice, modelInfo,
   listMemories, saveMemory, deleteMemory, startUpload, uploadChunk, urlInfo
 };
 
 function doGet() {
-  return out_({ ok: true, app: APP_NAME, time: new Date().toISOString() });
+  return out_({ ok: true, app: APP_NAME, version: GAS_VERSION, time: new Date().toISOString() });
 }
 
 function doPost(e) {
@@ -41,7 +57,9 @@ function doPost(e) {
     const req = JSON.parse(e.postData.contents || '{}');
     const fn = ROUTES[req.action];
     if (!fn) throw appErr_('不明な操作です: ' + req.action);
-    const result = fn(req.data || {}, req.token || '');
+    const data = req.data || {};
+    if (req.model && data.model === undefined) data.model = req.model; // 画面で選んだAIモデル
+    const result = fn(data, req.token || '');
     return out_(Object.assign({ ok: true }, result));
   } catch (err) {
     console.error(err && err.stack || err);
@@ -394,18 +412,68 @@ function deletePlan(d, token) {
 }
 
 /* ===================== Gemini 共通 ===================== */
-function gemini_(model, payload) {
+/** 1モデルへ呼び出し。混雑(429/5xx)時は待ち時間を伸ばして再試行し、最終の {code, text} を返す */
+function geminiFetch_(model, payload) {
   const key = prop_('GEMINI_API_KEY');
   if (!key) throw appErr_('GEMINI_API_KEY が設定されていません（スクリプトプロパティ）');
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`;
+  const url = 'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(model) + ':generateContent';
+  let code = 0, text = '';
   for (let attempt = 0; attempt < 3; attempt++) {
-    const res = UrlFetchApp.fetch(url, { method: 'post', contentType: 'application/json', payload: JSON.stringify(payload), muteHttpExceptions: true });
-    const code = res.getResponseCode();
-    if (code === 200) return JSON.parse(res.getContentText());
+    const res = UrlFetchApp.fetch(url, {
+      method: 'post', contentType: 'application/json', headers: { 'x-goog-api-key': key },
+      payload: JSON.stringify(payload), muteHttpExceptions: true
+    });
+    code = res.getResponseCode(); text = res.getContentText();
+    if (code === 200) break;
     if (code === 429 || code >= 500) { Utilities.sleep(1500 * (attempt + 1)); continue; }
-    throw appErr_('Gemini APIエラー(' + code + '): ' + res.getContentText().slice(0, 200));
+    break;
   }
-  throw appErr_('Gemini APIが混み合っています。少し待ってからお試しください');
+  return { code, text };
+}
+function geminiError_(code, text, model) {
+  if (code === 429 || code >= 500) return appErr_('Gemini APIが混み合っています。少し待ってからお試しください');
+  return appErr_('Gemini APIエラー(' + code + ', ' + model + '): ' + String(text).slice(0, 200));
+}
+/** モデル固定で呼ぶ（TTSなど） */
+function gemini_(model, payload) {
+  const r = geminiFetch_(model, payload);
+  if (r.code === 200) return JSON.parse(r.text);
+  throw geminiError_(r.code, r.text, model);
+}
+/** モデルが存在しない（廃止・未公開・名前違い）ことを示す応答か */
+function isModelNotFound_(code, text) {
+  if (code === 404) return true;
+  if (code === 400) return /not found|is not supported|NOT_FOUND|unknown model|invalid model/i.test(String(text));
+  return false;
+}
+/** 使うモデルを決定：画面指定 → スクリプトプロパティ → 汎用最新。不正な名前は無視 */
+function resolveGeminiModel_(requested) {
+  const req = String(requested || '').trim().toLowerCase();
+  if (req && GEMINI_MODEL_PATTERN.test(req)) return req;
+  const p = String(prop_('GEMINI_MODEL') || '').trim().toLowerCase();
+  if (p && GEMINI_MODEL_PATTERN.test(p)) return p;
+  return FALLBACK_GEMINI_MODELS[0];
+}
+/**
+ * テキスト生成用：選ばれたモデルで呼び、該当なしなら汎用最新モデルへ自動切り替え。
+ * 戻り値 { json, model（実際に使ったモデル）, requested（希望したモデル）, fallback }
+ */
+function geminiAuto_(requested, payload) {
+  const want = resolveGeminiModel_(requested);
+  const candidates = [want].concat(FALLBACK_GEMINI_MODELS.filter(m => m !== want));
+  let last = null;
+  for (const m of candidates) {
+    const r = geminiFetch_(m, payload);
+    if (r.code === 200) return { json: JSON.parse(r.text), model: m, requested: want, fallback: m !== want };
+    if (!isModelNotFound_(r.code, r.text)) throw geminiError_(r.code, r.text, m);
+    console.warn('Geminiモデル「' + m + '」に該当がないため次の候補に切り替えます');
+    last = r;
+  }
+  throw appErr_('使えるGeminiモデルが見つかりませんでした（' + candidates.join(', ') + '）: ' + String(last && last.text).slice(0, 150));
+}
+/** 画面向け：既定モデルと切り替え候補 */
+function modelInfo() {
+  return { version: GAS_VERSION, defaultModel: resolveGeminiModel_(''), fallbackModels: FALLBACK_GEMINI_MODELS };
 }
 function textOf_(json) {
   const parts = (((json.candidates || [])[0] || {}).content || {}).parts || [];
@@ -464,13 +532,12 @@ function generateGuide(d, token) {
     }
   }
   const cat = master.categories.find(c => c.categoryId === spot.category) || {};
-  const model = prop_('GEMINI_MODEL', 'gemini-2.5-flash');
   const userText =
     `スポット名：${spot.name}\n分類：${cat.name || spot.category}\n所在地：${spot.pref}\n` +
     (spot.distanceKm ? `距離：約${spot.distanceKm}km\n` : '') + (spot.durationMin ? `所要時間の目安：${spot.durationMin}分\n` : '') +
     (spot.difficulty ? `難易度：${spot.difficulty}\n` : '') + (spot.elevation ? `標高：${spot.elevation}\n` : '') + `概要：${spot.description}\n\n上記スポットの案内を作成してください。`;
 
-  const json = gemini_(model, {
+  const ai = geminiAuto_(d.model, {
     systemInstruction: { parts: [{ text: GUIDE_SYSTEM }] },
     contents: [{ role: 'user', parts: [{ text: userText }] }],
     generationConfig: {
@@ -489,6 +556,7 @@ function generateGuide(d, token) {
       }
     }
   });
+  const json = ai.json, model = ai.model;
   let g;
   try { g = JSON.parse(textOf_(json)); } catch (e) { throw appErr_('解説の作成に失敗しました。もう一度お試しください'); }
   g.narration = sanitizeNarration_(g.narration);
@@ -500,7 +568,7 @@ function generateGuide(d, token) {
     if (row) update_('Guides', row._row, rec); else append_('Guides', rec);
   });
   cache.put(ckey, JSON.stringify(g), 21600);
-  return { guide: g, cached: false };
+  return { guide: g, cached: false, model, requestedModel: ai.requested, fallback: ai.fallback };
 }
 
 /* ===================== Gemini TTS ===================== */
@@ -1031,12 +1099,12 @@ function planAdvice(d, token) {
     (d.schedule ? `時刻表（経路検索の所要時間を反映済み）：\n${String(d.schedule).slice(0, 2000)}\n` : '') +
     `メモ：${String(p.memo || '').slice(0, 500)}\n\n` +
     `次の観点で、具体的に短く助言してください：移動時間を踏まえた時間配分の無理（出発時刻の前倒し・後ろ倒しの提案を含む）、順番の入れ替え案、季節・天候の注意、持ち物、休憩や食事の取り方。`;
-  const json = gemini_(prop_('GEMINI_MODEL', 'gemini-2.5-flash'), {
+  const ai = geminiAuto_(d.model, {
     systemInstruction: { parts: [{ text: '日本の旅行計画アドバイザー。前置きや挨拶は書かず、本題から始める。見出し記号や太字記号（#や*）は使わず、「・」の箇条書きで最大8項目、全体で500字以内。' }] },
     contents: [{ role: 'user', parts: [{ text: prompt }] }],
     generationConfig: { temperature: 0.5 }
   });
-  return { text: textOf_(json).replace(/[*#]/g, '').trim() };
+  return { text: textOf_(ai.json).replace(/[*#]/g, '').trim(), model: ai.model, requestedModel: ai.requested, fallback: ai.fallback };
 }
 
 /* ===================== カテゴリ管理 ===================== */
@@ -1297,8 +1365,8 @@ function retryGeocode() {
 
 /* ===================== 動作テスト（エディタから実行） ===================== */
 function testGemini() {
-  const r = gemini_(prop_('GEMINI_MODEL', 'gemini-2.5-flash'), { contents: [{ role: 'user', parts: [{ text: '「こんにちは」とだけ返して' }] }] });
-  Logger.log(textOf_(r));
+  const r = geminiAuto_('', { contents: [{ role: 'user', parts: [{ text: '「こんにちは」とだけ返して' }] }] });
+  Logger.log('GAS ' + GAS_VERSION + ' / 使用モデル: ' + r.model + (r.fallback ? '（' + r.requested + ' から切替）' : '') + ' / 応答: ' + textOf_(r.json));
 }
 function testTts() {
   const model = prop_('GEMINI_TTS_MODEL', 'gemini-2.5-flash-preview-tts');

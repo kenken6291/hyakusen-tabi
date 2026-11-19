@@ -23,7 +23,7 @@
 |---|---|---|
 | `GEMINI_API_KEY` | ○ | Google AI Studio で発行したAPIキー |
 | `DRIVE_FOLDER_ID` | 任意 | TTS音声キャッシュ用のDriveフォルダID（同じ文章の再合成を防ぎ、API利用量を節約） |
-| `GEMINI_MODEL` | 任意 | 案内文用モデル（既定：`gemini-2.5-flash`） |
+| `GEMINI_MODEL` | 任意 | 案内文・アドバイス用の既定モデル（未設定なら汎用の最新モデル。画面の「AIモデル」で選んだものが優先。該当なしの時は `gemini-flash-latest` → `gemini-4-hydrogen` → `gemini-3.8-flash` の順に自動切替） |
 | `GEMINI_TTS_MODEL` | 任意 | 音声合成用モデル（既定：`gemini-2.5-flash-preview-tts`） |
 | `APP_URL` | 任意 | メール本文に載せるURL（例：`https://kenken6291.github.io/hyakusen-tabi/`） |
 | `SPREADSHEET_ID` | 任意 | スタンドアロンGASにする場合のみ |
